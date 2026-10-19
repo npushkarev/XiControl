@@ -44,6 +44,47 @@ public sealed class SettingsToolkit
 
     // ---- Строки ----
 
+    /// <summary>Главная карточка раздела: крупный заголовок и короткое честное состояние.</summary>
+    public void AddHero(Panel p, string titleKey, string subKey, string status, bool active)
+    {
+        int inset = Sc(20), textW = RowW - inset * 2;
+        int descH = TextRenderer.MeasureText(Loc.T(subKey), NoteFont,
+            new Size(textW, 0), TextFormatFlags.WordBreak).Height;
+        var hero = new Panel
+        {
+            Width = RowW, Height = Sc(106) + descH, BackColor = T.Card,
+            Margin = new Padding(0, 0, 0, Sc(8)),
+        };
+        hero.Region = new Region(Draw.Rounded(new RectangleF(0, 0, hero.Width, hero.Height), Sc(10)));
+        hero.Paint += (_, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(T.Border);
+            using var path = Draw.Rounded(new RectangleF(0.5f, 0.5f, hero.Width - 1.5f, hero.Height - 1.5f), Sc(10));
+            e.Graphics.DrawPath(pen, path);
+        };
+        hero.Controls.Add(new Label
+        {
+            Text = Loc.T(titleKey), Font = HeadFont, ForeColor = T.Text,
+            Location = new Point(inset, Sc(16)), Size = new Size(textW, Sc(28)),
+        });
+        hero.Controls.Add(new Label
+        {
+            Text = Loc.T(subKey), Font = NoteFont, ForeColor = T.Text2,
+            Location = new Point(inset, Sc(51)), Size = new Size(textW, descH + Sc(2)),
+        });
+        var badge = ValueLabel(status);
+        badge.TextAlign = ContentAlignment.MiddleLeft;
+        badge.ForeColor = active ? T.Accent : T.Text2;
+        badge.BackColor = T.Field;
+        badge.Padding = new Padding(Sc(10), 0, Sc(10), 0);
+        badge.Width += Sc(20);
+        badge.Height = Sc(26);
+        badge.Location = new Point(inset, Sc(65) + descH);
+        hero.Controls.Add(badge);
+        p.Controls.Add(hero);
+    }
+
     public void AddHeader(Panel p, string titleKey, string subKey)
     {
         p.Controls.Add(new Label
@@ -91,7 +132,9 @@ public sealed class SettingsToolkit
         int descH = string.IsNullOrEmpty(desc)
             ? 0
             : TextRenderer.MeasureText(desc, DescFont, new Size(textW, 0), TextFormatFlags.WordBreak).Height;
-        int h = string.IsNullOrEmpty(desc) ? Sc(52) : Sc(29) + descH + Sc(14);
+        int titleH = TextRenderer.MeasureText(title, TitleFont, new Size(textW, 0), TextFormatFlags.WordBreak).Height;
+        int descY = Sc(12) + titleH + (descH > 0 ? Sc(5) : 0);
+        int h = Math.Max(Sc(58), descY + descH + Sc(14));
         // карточка обрезана по Region — контрол выше текста (например сетка позиций OSD)
         // иначе молча теряет нижний ряд. Тумблеры и комбо ниже этой планки, их не задевает
         h = Math.Max(h, ctl.Height + Sc(16));
@@ -100,11 +143,11 @@ public sealed class SettingsToolkit
         card.Region = new Region(Draw.Rounded(new RectangleF(0, 0, RowW, h), Sc(6)));
         card.Paint += (_, e) => PaintCardBorder(e.Graphics, RowW, h);
 
-        var t = new Label { Text = title, AutoSize = false, Width = textW, Height = Sc(20), ForeColor = T.Text, BackColor = Color.Transparent, Font = TitleFont, Location = new Point(Sc(16), Sc(9)), AutoEllipsis = true };
+        var t = new Label { Text = title, AutoSize = false, Width = textW, Height = titleH + Sc(2), ForeColor = T.Text, BackColor = Color.Transparent, Font = TitleFont, Location = new Point(Sc(16), Sc(12)) };
         card.Controls.Add(t);
         if (!string.IsNullOrEmpty(desc))
         {
-            var d = new Label { Text = desc, Tag = "dim", AutoSize = false, Width = textW, Height = descH + Sc(2), ForeColor = T.Text2, BackColor = Color.Transparent, Font = DescFont, Location = new Point(Sc(16), Sc(29)) };
+            var d = new Label { Text = desc, Tag = "dim", AutoSize = false, Width = textW, Height = descH + Sc(2), ForeColor = T.Text2, BackColor = Color.Transparent, Font = DescFont, Location = new Point(Sc(16), descY) };
             card.Controls.Add(d);
         }
         card.Controls.Add(ctl);

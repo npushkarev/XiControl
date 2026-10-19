@@ -18,8 +18,14 @@ public sealed class GeneralTab : SettingsPane
                 act.SetLanguage(langs[i].Culture);
                 rebuild(); // пересобрать окно на новом языке (после выхода из обработчика)
             }, ui.Sc(150)));
-        ui.AddRow(this, "settings.autostart", "settings.autostart.desc",
-            ui.Toggle(act.GetAutoStart(), act.SetAutoStart));
+        var startup = act.GetAutoStartState();
+        var autoStart = ui.Toggle(startup.Enabled, on => act.SetAutoStart(on, rebuild));
+        autoStart.Enabled = !startup.Pending;
+        ui.AddRow(this, "settings.autostart",
+            startup.Pending ? "settings.autostart.pending" : "settings.autostart.desc", autoStart);
+        if (startup.Failed) ui.AddNote(this, "settings.autostart.failed");
+
+        ui.AddGroup(this, "settings.general.appearance");
 
         // тема панелей/OSD/«Монитора»: значения соответствуют AppConfig.FlyoutTheme
         string?[] themeValues = [null, "light", "system"];

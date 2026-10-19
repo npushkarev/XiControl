@@ -18,8 +18,8 @@ public enum StartStrategy { None, Restore, Pin, Profiles }
 /// </summary>
 public sealed class SettingsActions
 {
-    public required Func<bool> GetAutoStart;
-    public required Action<bool> SetAutoStart;
+    public required Func<AutoStartView> GetAutoStartState;
+    public required Action<bool, Action> SetAutoStart;
     public required Func<IReadOnlyList<LangInfo>> Languages;  // доступные языки (data-driven)
     public required Func<string> CurrentLanguage;             // текущий культурный код
     public required Action<string> SetLanguage;              // сменить язык по культурному коду
@@ -78,6 +78,9 @@ public sealed class SettingsActions
     public required Action<HapticsVibration> SetTouchpadVibration;  // сила вибрации (пишется в сам тачпад)
     public required Action<int> SetTouchpadPressure;          // порог нажатия, единицы прошивки
     public required Action<bool> SetOwlFeature;
+    public required Action<bool> SetAwake;
+    public required Action<bool, bool, bool> SetAwakeOptions; // крышка AC, крышка DC, держать экран
+    public required Func<bool> GetAwakeFailed;
     public required Action<int> SetCareLimit;                // порог «беречь батарею», % (применить на железе)
     public required Action SoftChargeApplied;                // программный порог изменён — перевзвести наблюдение (XIC-74)
     public required Func<SystemIntegration.BatteryReport> GetBatteryReport; // здоровье батареи (WMI + SOH1)

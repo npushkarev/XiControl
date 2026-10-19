@@ -69,6 +69,36 @@ public sealed class AutoStartTests
         AutoStart.IsOutdated(taskVersion, Version.Parse(current)).Should().BeFalse();
     }
 
+    [Fact]
+    public void BuildXml_UsesInteractiveElevatedStartup_OnAcAndBattery()
+    {
+        var doc = System.Xml.Linq.XDocument.Parse(AutoStart.BuildXml(@"C:\Apps\XiControl.exe", User));
+        System.Xml.Linq.XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        string? Value(string name) => doc.Descendants(ns + name).Single().Value;
+
+        Value("RunLevel").Should().Be("HighestAvailable");
+        Value("LogonType").Should().Be("InteractiveToken");
+        Value("DisallowStartIfOnBatteries").Should().Be("false");
+        Value("StopIfGoingOnBatteries").Should().Be("false");
+        Value("ExecutionTimeLimit").Should().Be("PT0S");
+        Value("MultipleInstancesPolicy").Should().Be("IgnoreNew");
+        Value("StateChange").Should().Be("ConsoleConnect");
+        Value("Arguments").Should().Be("--autostart");
+        doc.Descendants(ns + "LogonTrigger").Should().ContainSingle();
+        doc.Descendants(ns + "Delay").Select(x => x.Value).Should().OnlyContain(x => x == "PT5S");
+    }
+
+    [Fact]
+    public void BuildXml_EscapesPathAndUserWithoutChangingTheirValues()
+    {
+        const string exe = @"C:\Apps & Tools\XiControl.exe";
+        const string user = @"PC\A&B";
+        var doc = System.Xml.Linq.XDocument.Parse(AutoStart.BuildXml(exe, user));
+        System.Xml.Linq.XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        doc.Descendants(ns + "Command").Single().Value.Should().Be(exe);
+        doc.Descendants(ns + "UserId").Select(x => x.Value).Should().OnlyContain(x => x == user);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

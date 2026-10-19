@@ -21,6 +21,26 @@ public sealed class AppControllerTests
     private readonly List<string> _events = [];
     private readonly AlsWatcher _als = new();
     private readonly AppController _c;
+    private readonly FakeStartup _startup = new();
+    private bool _awakeAccepted = true;
+    private int _awakeEnables, _awakeDisables;
+
+    private sealed class FakeStartup : IAutoStart
+    {
+        public bool Enabled, Refuse, Throw, IgnoreSet;
+        public Action? BeforeSet;
+        public readonly List<bool> Calls = [];
+        public bool IsEnabled() => Enabled;
+        public bool Set(bool enabled)
+        {
+            BeforeSet?.Invoke();
+            Calls.Add(enabled);
+            if (Throw) throw new InvalidOperationException("scheduler unavailable");
+            if (!Refuse && !IgnoreSet) Enabled = enabled;
+            return !Refuse;
+        }
+        public void RepairIfBroken() { }
+    }
 
     public AppControllerTests()
     {
@@ -40,7 +60,10 @@ public sealed class AppControllerTests
             new TouchpadDeadZone(_cfg, new TouchpadControl(_cfg)),
             // краевые ползунки: действия подменены пустышками — реальные крутили бы
             // яркость и громкость машины прямо во время прогона тестов
-            new TouchpadEdgeSliders(_cfg, new TouchpadControl(_cfg), _ => { }, _ => { }))
+            new TouchpadEdgeSliders(_cfg, new TouchpadControl(_cfg), _ => { }, _ => { }),
+            autoStart: _startup,
+            enableAwake: () => { _awakeEnables++; return _awakeAccepted; },
+            disableAwake: () => _awakeDisables++)
         {
             CareChanged = on => _events.Add($"care:{on}"),
             TravelChanged = on => _events.Add($"travel:{on}"),
@@ -50,6 +73,135 @@ public sealed class AppControllerTests
             ProfileModeApplied = () => _events.Add("profile-applied"),
             ModesReloaded = () => _events.Add("modes-reloaded"),
         };
+    }
+
+    // ---- Питание/крышка и автозапуск: без настоящего плана питания и Планировщика ----
+
+    [Fact]
+    public void AwakeOptions_WhileOff_OnlyRememberTheChoice()
+    {
+        _c.SetAwakeOptions(lidOnAc: false, lidOnBattery: true, keepDisplayOn: false);
+
+        _cfg.OwlLidOnAc.Should().BeFalse();
+        _cfg.OwlLidOnBattery.Should().BeTrue();
+        _cfg.OwlIgnoreDisplay.Should().BeTrue();
+        _cfg.Awake.Should().BeFalse();
+        _awakeEnables.Should().Be(0);
+    }
+
+    [Fact]
+    public void AwakeOptions_WhileOn_ReapplyImmediately()
+    {
+        _cfg.Awake = true;
+        _c.SetAwakeOptions(false, true, false);
+
+        _awakeEnables.Should().Be(1);
+        _cfg.Awake.Should().BeTrue();
+        _c.AwakeFailed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AwakeOptions_Refused_ReleasesAndShowsFailure()
+    {
+        _cfg.Awake = true;
+        _awakeAccepted = false;
+        _c.SetAwakeOptions(true, true, false);
+
+        _cfg.Awake.Should().BeFalse();
+        _awakeDisables.Should().Be(1);
+        _c.AwakeFailed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SetAwake_HiddenFeature_CannotEnable()
+    {
+        _cfg.OwlMode = false;
+        _c.SetAwake(true);
+        _awakeEnables.Should().Be(0);
+        _cfg.Awake.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SetAwake_Refused_DoesNotPretendToBeOn()
+    {
+        _awakeAccepted = false;
+        _c.SetAwake(true);
+        _cfg.Awake.Should().BeFalse();
+        _c.AwakeFailed.Should().BeTrue();
+        _awakeDisables.Should().Be(1);
+    }
+
+    [Fact]
+    public void HideOwl_RestoresEvenABatteryOnlyBackup()
+    {
+        _cfg.AwakeSavedLidDc = 1;
+        _c.ToggleOwlFeature(false);
+        _awakeDisables.Should().Be(1);
+        _cfg.Awake.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Shutdown_RestoresBatteryOnlyBackup_ButRemembersActiveMode()
+    {
+        _cfg.Awake = true;
+        _cfg.AwakeSavedLidDc = 1;
+        _c.Shutdown();
+        _awakeDisables.Should().Be(1);
+        _cfg.Awake.Should().BeTrue("режим восстановится при следующем запуске");
+    }
+
+    [Fact]
+    public async Task AutoStart_Success_ShowsConfirmedState()
+    {
+        await _c.SetAutoStartAsync(true);
+        _c.AutoStartState.Should().Be(new AutoStartView(true, false, false));
+        _cfg.AutoStart.Should().BeTrue();
+        _startup.Calls.Should().Equal(true);
+    }
+
+    [Fact]
+    public async Task AutoStart_Refused_ShowsActualNotDesiredState()
+    {
+        _startup.Refuse = true;
+        await _c.SetAutoStartAsync(true);
+        _c.AutoStartState.Should().Be(new AutoStartView(false, false, true));
+        _cfg.AutoStart.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AutoStart_ReadbackMismatch_IsFailureEvenAfterSuccessfulCommand()
+    {
+        _startup.IgnoreSet = true;
+        await _c.SetAutoStartAsync(true);
+        _c.AutoStartState.Should().Be(new AutoStartView(false, false, true));
+    }
+
+    [Fact]
+    public async Task AutoStart_Exception_DoesNotLeavePendingOrChangeConfig()
+    {
+        _startup.Throw = true;
+        await _c.SetAutoStartAsync(true);
+        _c.AutoStartState.Should().Be(new AutoStartView(false, false, true));
+        _cfg.AutoStart.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AutoStart_Pending_DoesNotBlockUiOrStartAnotherOperation()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var finish = new ManualResetEventSlim();
+        _startup.BeforeSet = () => { entered.Set(); finish.Wait(TimeSpan.FromSeconds(5)); };
+        var first = _c.SetAutoStartAsync(true);
+        try
+        {
+            entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            _c.AutoStartState.Pending.Should().BeTrue();
+            await _c.SetAutoStartAsync(false);
+        }
+        finally { finish.Set(); }
+        await first;
+        _startup.Calls.Should().Equal(true);
+        _c.AutoStartState.Should().Be(new AutoStartView(true, false, false));
     }
 
     // ---- Авто-яркость: спрос на датчик (XIC-84) ----

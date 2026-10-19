@@ -4,12 +4,11 @@ using XiControl.Config;
 namespace XiControl.SystemIntegration;
 
 /// <summary>
-/// Режим «Не спать»: пока включён — система не засыпает (запрос питания PowerCreateRequest),
-/// а закрытие крышки НА ПИТАНИИ ОТ СЕТИ не уводит в сон (действие крышки AC →
-/// «ничего не делать» через Power Management API). На батарее крышка не трогается —
-/// там штатный сон. Экран дополнительно удерживается негаснущим — кроме случая, когда в
-/// config.json задан <see cref="AppConfig.OwlIgnoreDisplay"/> (дефолт false = прежнее
-/// поведение); с ним сова держит бодрой только систему, для удалённого доступа.
+/// Режим «Не спать»: пока включён — система не засыпает (запрос питания PowerCreateRequest).
+/// Закрытие крышки отдельно для сети и батареи можно заменить на «ничего не делать» через
+/// Power Management API. По умолчанию меняется только AC, батарея — явный opt-in.
+/// Экран дополнительно удерживается негаснущим, кроме <see cref="AppConfig.OwlIgnoreDisplay"/>:
+/// с ним сова держит бодрой только систему, для удалённого доступа.
 ///
 /// Исходное действие крышки хранится в config.json вместе со схемой питания, в которую его
 /// надо вернуть (XIC-82): схему могут сменить, пока сова включена, и тогда возвращать значение
@@ -32,85 +31,131 @@ public static class AwakeMode
     /// <summary>Выключить: вернуть действие крышки и снять запрет сна/гашения экрана.</summary>
     public static void Disable(AppConfig cfg) => Disable(cfg, PowerPlan.Instance, PowerRequest.Instance);
 
+    /// <summary>Осталось исходное действие хотя бы для одного источника питания.</summary>
+    public static bool HasLidBackup(AppConfig cfg) =>
+        cfg.AwakeSavedLidAc is not null || cfg.AwakeSavedLidDc is not null;
+
     internal static bool Enable(AppConfig cfg, IPowerPlan plan, IKeepAwake awake)
     {
+        bool enabled = false;
         try
         {
-            if (!plan.TryGetActive(out Guid scheme)) return false;
-
-            // Прошлая запись восстановления — от другой схемы (сменили, пока сова была вкл, а
-            // вернуть не вышло): сначала вернуть ту, иначе её исходное значение потеряется —
-            // слот под запись один. Не вернулось — не включаемся, чем терять, куда возвращать.
-            if (cfg.AwakeSavedLidScheme is Guid prior && prior != scheme && !RestoreLid(cfg, plan))
-                return false;
-
-            // исходное действие крышки запоминаем один раз (если уже включены — не перетирать)
-            if (cfg.AwakeSavedLidAc is null)
+            if (!cfg.OwlLidOnAc && !cfg.OwlLidOnBattery)
             {
-                if (!plan.TryReadLidAc(scheme, out uint cur))
+                // Только запрос питания не зависит от доступности схемы. Старое изменение
+                // крышки всё же надо вернуть, если опции выключили у уже работающей совы.
+                if (!RestoreLid(cfg, plan)) return false;
+            }
+            else
+            {
+                if (!plan.TryGetActive(out Guid scheme)) return false;
+
+                // Слот схемы один: пока не вернули оба источника старой, новую не занимаем.
+                if (HasLidBackup(cfg) && cfg.AwakeSavedLidScheme is Guid prior && prior != scheme
+                    && !RestoreLid(cfg, plan)) return false;
+
+                // Живое переключение опций: отключённому источнику возвращаем его действие,
+                // включённый оставляем с прежним backup, а не запоминаем наш «ничего не делать».
+                if (!RestoreLid(cfg, plan, ac: !cfg.OwlLidOnAc, dc: !cfg.OwlLidOnBattery)) return false;
+
+                int? savedAc = cfg.AwakeSavedLidAc, savedDc = cfg.AwakeSavedLidDc;
+                if (cfg.OwlLidOnAc && savedAc is null)
                 {
-                    Log.Write("AwakeMode: действие крышки не прочиталось — без записи восстановления не переопределяем");
+                    if (!plan.TryReadLidAc(scheme, out uint current)) return ReadFailed();
+                    savedAc = (int)current;
+                }
+                if (cfg.OwlLidOnBattery && savedDc is null)
+                {
+                    if (!plan.TryReadLidDc(scheme, out uint current)) return ReadFailed();
+                    savedDc = (int)current;
+                }
+
+                // Сначала читаем ВСЕ нужные исходные значения: отказ чтения DC не должен
+                // оставить AC изменённым. Сохраняем оба вместе со схемой до первой записи.
+                cfg.AwakeSavedLidAc = savedAc;
+                cfg.AwakeSavedLidDc = savedDc;
+                cfg.AwakeSavedLidScheme = scheme;
+                cfg.Save();
+
+                if ((cfg.OwlLidOnAc && !plan.WriteLidAc(scheme, LidDoNothing))
+                    || (cfg.OwlLidOnBattery && !plan.WriteLidDc(scheme, LidDoNothing))
+                    || !plan.SetActive(scheme))
+                {
+                    Log.Write("AwakeMode: действие крышки не переопределилось — откатываю");
                     return false;
                 }
-                cfg.AwakeSavedLidAc = (int)cur;
-            }
-            cfg.AwakeSavedLidScheme = scheme;
-            cfg.Save(); // запись восстановления — до правки плана
-
-            if (!plan.WriteLidAc(scheme, LidDoNothing) || !plan.SetActive(scheme))
-            {
-                Log.Write("AwakeMode: действие крышки не переопределилось — откатываю");
-                RestoreLid(cfg, plan);
-                return false;
             }
 
-            // система — всегда, это и есть суть режима; экран отпускаем только по опции.
-            // Не удержали — и крышку не держим: «сова» либо целиком, либо никак
+            // Система — всегда, экран — по опции. Любой отказ, в т.ч. при reapply до Hold,
+            // снимает и ПРЕЖНИЙ запрос: выключенная из-за ошибки сова не должна держать сон.
             if (!awake.Hold(display: !cfg.OwlIgnoreDisplay))
             {
                 Log.Write("AwakeMode: запрос питания не принят — откатываю крышку");
-                RestoreLid(cfg, plan);
                 return false;
             }
+            enabled = true;
             return true;
         }
-        catch (Exception ex) { Log.Ex("AwakeMode.Enable", ex); RestoreLid(cfg, plan); return false; }
+        catch (Exception ex) { Log.Ex("AwakeMode.Enable", ex); return false; }
+        finally { if (!enabled) Disable(cfg, plan, awake); }
+    }
+
+    private static bool ReadFailed()
+    {
+        Log.Write("AwakeMode: действие крышки не прочиталось — без записи восстановления не переопределяем");
+        return false;
     }
 
     internal static void Disable(AppConfig cfg, IPowerPlan plan, IKeepAwake awake)
     {
-        try
-        {
-            awake.Release();
-            RestoreLid(cfg, plan);
-        }
+        try { awake.Release(); }
         catch (Exception ex) { Log.Ex("AwakeMode.Disable", ex); }
+        RestoreLid(cfg, plan); // даже исключение при снятии запроса не должно пропустить крышку
     }
 
     /// <summary>
-    /// Вернуть действие крышки в ту схему, где его меняли. Применять (SetActive) нужно, только
-    /// если она сейчас активна: значение неактивной схемы Windows прочтёт сама при переключении.
-    /// Запись без схемы — от версии до XIC-82: возвращаем, как раньше, в активную.
-    /// true — вернули (или нечего); false — запись осталась, попробуем на следующем старте.
+    /// Вернуть действия крышки в ту схему, где их меняли. SetActive — только для активной:
+    /// неактивную схему Windows прочтёт сама при переключении. Каждый источник независим:
+    /// очищаем только успешно возвращённый, GUID остаётся до последнего. Запись без схемы —
+    /// от версии до XIC-82: возвращаем в активную, закрепляя её для возможного повтора.
     /// </summary>
-    internal static bool RestoreLid(AppConfig cfg, IPowerPlan plan)
+    internal static bool RestoreLid(AppConfig cfg, IPowerPlan plan) => RestoreLid(cfg, plan, ac: true, dc: true);
+
+    private static bool RestoreLid(AppConfig cfg, IPowerPlan plan, bool ac, bool dc)
     {
+        int? savedAc = ac ? cfg.AwakeSavedLidAc : null, savedDc = dc ? cfg.AwakeSavedLidDc : null;
+        if (savedAc is null && savedDc is null) return true;
         try
         {
-            if (cfg.AwakeSavedLidAc is not int saved) return true;
             if (!plan.TryGetActive(out Guid active)) return false;
             Guid target = cfg.AwakeSavedLidScheme ?? active;
-            if (!plan.WriteLidAc(target, (uint)saved) || (target == active && !plan.SetActive(target)))
+            if (cfg.AwakeSavedLidScheme is null)
             {
-                Log.Write("AwakeMode: действие крышки не восстановилось — запись оставляю, повторю на старте");
-                return false;
+                cfg.AwakeSavedLidScheme = target;
+                cfg.Save(); // частичный возврат legacy-записи не должен потерять исходную схему
             }
-            cfg.AwakeSavedLidAc = null;
-            cfg.AwakeSavedLidScheme = null;
-            cfg.Save();
-            return true;
+
+            bool restoredAc = savedAc is int originalAc && RestoreSource(plan, target, originalAc, ac: true);
+            bool restoredDc = savedDc is int originalDc && RestoreSource(plan, target, originalDc, ac: false);
+            if ((restoredAc || restoredDc) && target == active && !plan.SetActive(target))
+                restoredAc = restoredDc = false; // запись ещё не применена — backup пока нужен
+
+            if (restoredAc) cfg.AwakeSavedLidAc = null;
+            if (restoredDc) cfg.AwakeSavedLidDc = null;
+            if (!HasLidBackup(cfg)) cfg.AwakeSavedLidScheme = null;
+            if (restoredAc || restoredDc) cfg.Save();
+
+            bool restored = (savedAc is null || restoredAc) && (savedDc is null || restoredDc);
+            if (!restored) Log.Write("AwakeMode: действие крышки не восстановилось — запись оставляю, повторю на старте");
+            return restored;
         }
         catch (Exception ex) { Log.Ex("AwakeMode.RestoreLid", ex); return false; }
+    }
+
+    private static bool RestoreSource(IPowerPlan plan, Guid scheme, int saved, bool ac)
+    {
+        try { return ac ? plan.WriteLidAc(scheme, (uint)saved) : plan.WriteLidDc(scheme, (uint)saved); }
+        catch (Exception ex) { Log.Ex("AwakeMode.RestoreSource", ex); return false; }
     }
 
     /// <summary>Шов над Power Management API: только то, что нужно крышке. Ради тестов
@@ -119,7 +164,9 @@ public static class AwakeMode
     {
         bool TryGetActive(out Guid scheme);
         bool TryReadLidAc(Guid scheme, out uint value);
+        bool TryReadLidDc(Guid scheme, out uint value);
         bool WriteLidAc(Guid scheme, uint value);
+        bool WriteLidDc(Guid scheme, uint value);
         bool SetActive(Guid scheme);
     }
 
@@ -221,7 +268,9 @@ public static class AwakeMode
 
         [DllImport("powrprof.dll")] private static extern uint PowerGetActiveScheme(IntPtr root, out IntPtr scheme);
         [DllImport("powrprof.dll")] private static extern uint PowerReadACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
+        [DllImport("powrprof.dll")] private static extern uint PowerReadDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
         [DllImport("powrprof.dll")] private static extern uint PowerWriteACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
+        [DllImport("powrprof.dll")] private static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
         [DllImport("powrprof.dll")] private static extern uint PowerSetActiveScheme(IntPtr root, ref Guid scheme);
         [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr h);
 
@@ -236,8 +285,14 @@ public static class AwakeMode
         public bool TryReadLidAc(Guid scheme, out uint value) =>
             PowerReadACValueIndex(IntPtr.Zero, ref scheme, ref SubButtons, ref LidAction, out value) == 0;
 
-        public bool WriteLidAc(Guid scheme, uint value) => Logged("write",
+        public bool TryReadLidDc(Guid scheme, out uint value) =>
+            PowerReadDCValueIndex(IntPtr.Zero, ref scheme, ref SubButtons, ref LidAction, out value) == 0;
+
+        public bool WriteLidAc(Guid scheme, uint value) => Logged("write AC",
             PowerWriteACValueIndex(IntPtr.Zero, ref scheme, ref SubButtons, ref LidAction, value));
+
+        public bool WriteLidDc(Guid scheme, uint value) => Logged("write DC",
+            PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref SubButtons, ref LidAction, value));
 
         public bool SetActive(Guid scheme) => Logged("set", PowerSetActiveScheme(IntPtr.Zero, ref scheme));
 

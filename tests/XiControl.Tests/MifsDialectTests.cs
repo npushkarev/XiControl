@@ -94,7 +94,9 @@ public sealed class MifsDialectTests
     [InlineData(MifsDialect.Classic, new byte[] { 0x00, 0x80, 0x00, 0x10, 0x02, 0x00, 0x01 }, true)]
     [InlineData(MifsDialect.Classic, new byte[] { 0x00, 0xE0 }, false)]
     [InlineData(MifsDialect.Classic, new byte[] { 0x00, 0x00, 0x00, 0x10 }, null)]   // не статус «нет»
+#pragma warning disable CA1861 // Аргумент атрибута обязан быть константой; static readonly здесь недопустим.
     [InlineData(MifsDialect.Classic, new byte[] { }, null)]                          // пустой ответ
+#pragma warning restore CA1861
     [InlineData(MifsDialect.Echo, new byte[] { 0x00, 0x10, 0x02 }, false)]            // TM2113
     [InlineData(MifsDialect.Unsupported, new byte[] { 0x00, 0x42 }, false)]
     [InlineData(MifsDialect.Unknown, new byte[] { 0x00, 0x80 }, null)]

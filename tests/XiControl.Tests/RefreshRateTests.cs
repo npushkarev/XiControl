@@ -19,10 +19,12 @@ public sealed class RefreshRateTests
     public void NextRate_EmptySet_ReturnsNull() =>
         RefreshRate.NextRate(60, [0, 1]).Should().BeNull();
 
+#pragma warning disable CA1861 // В InlineData нельзя сослаться на static readonly массив.
     [Theory]
     [InlineData(new[] { 60 }, false)]
     [InlineData(new[] { 60, 120 }, true)]
     [InlineData(new[] { 60, 60, 1 }, false)]
+#pragma warning restore CA1861
     public void HasMultipleRates_RequiresTwoDistinctRealRates(int[] rates, bool expected) =>
         RefreshRate.HasMultipleRates(rates).Should().Be(expected);
 

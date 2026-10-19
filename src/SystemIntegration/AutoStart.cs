@@ -113,10 +113,7 @@ public static class AutoStart
         return m.Success ? System.Net.WebUtility.HtmlDecode(m.Groups[1].Value) : null;
     }
 
-    public static void Set(bool enabled)
-    {
-        if (enabled) Enable(); else Disable();
-    }
+    public static bool Set(bool enabled) => enabled ? Enable() : Disable();
 
     private static bool Enable()
     {
@@ -199,10 +196,11 @@ public static class AutoStart
         catch (Exception ex) { Log.Ex("AutoStart.Run", ex); return -1; }
     }
 
-    private static string BuildXml()
+    private static string BuildXml() => BuildXml(Environment.ProcessPath!, WindowsIdentity.GetCurrent().Name);
+
+    // Чистая сборка XML: проверяем условия батареи/входа и escaping без живого Планировщика.
+    internal static string BuildXml(string exe, string user)
     {
-        string exe = Environment.ProcessPath!; // у обычного exe-процесса путь есть всегда
-        string user = WindowsIdentity.GetCurrent().Name; // DOMAIN\User
         string exeX = SecurityElement.Escape(exe)!;
         string userX = SecurityElement.Escape(user)!;
 

@@ -32,8 +32,14 @@ public sealed class AppController
     private readonly TouchpadHeavyPress? _heavy;
     private readonly PowerModeSync? _modeSync;  // режим питания Windows вместе с режимом (XIC-96)
 
+    private readonly IAutoStart _autoStartTask;
+    private readonly object _autoStartLock = new();
+    private readonly object _autoStartOperation = new();
+    private readonly Func<bool> _enableAwake;
+    private readonly Action _disableAwake;
     private PerfMode[] _modes = [];
-    private bool _autoStart;   // кэш состояния автозапуска (не дёргаем schtasks на каждое меню)
+    private volatile bool _autoStart; // кэш состояния: schtasks — только на старте и по кнопке
+    private bool _autoStartPending, _autoStartFailed, _awakeFailed;
 
     // Все режимы по нарастанию мощности — этот же порядок задаёт цикл Mi-кнопки
     // и список в комбо профилей питания (вкладка «Производительность»).
@@ -65,10 +71,14 @@ public sealed class AppController
         AutoBrightnessGuard autoGuard, AlsWatcher als,
         TravelChargeMonitor travel, TouchpadControl touchpad, TouchscreenControl touchscreen,
         TouchpadDeadZone deadZone, TouchpadEdgeSliders edges,
-        TouchpadHaptics? haptics = null, TouchpadHeavyPress? heavy = null, PowerModeSync? modeSync = null)
+        TouchpadHaptics? haptics = null, TouchpadHeavyPress? heavy = null, PowerModeSync? modeSync = null,
+        IAutoStart? autoStart = null, Func<bool>? enableAwake = null, Action? disableAwake = null)
     {
         _mifs = mifs;
         _cfg = cfg;
+        _autoStartTask = autoStart ?? new TaskAutoStart();
+        _enableAwake = enableAwake ?? (() => AwakeMode.Enable(cfg));
+        _disableAwake = disableAwake ?? (() => AwakeMode.Disable(cfg));
         _power = power;
         _loc = loc;
         _charge = charge;
@@ -97,6 +107,14 @@ public sealed class AppController
     /// <summary>Автозапуск включён (кэш; реальное состояние уточняется в фоне на старте).</summary>
     public bool AutoStartEnabled => _autoStart;
 
+    public AutoStartView AutoStartState
+    {
+        get { lock (_autoStartLock) return new(_autoStart, _autoStartPending, _autoStartFailed); }
+    }
+
+    /// <summary>Не удалось применить запрос сна/крышки; UI не выдаёт это за успех.</summary>
+    public bool AwakeFailed => _awakeFailed;
+
     /// <summary>
     /// Стартовая бизнес-логика (зовёт TrayApp.Start): кэш автозапуска, ре-арм guard-ов,
     /// возобновление «в дорогу», режим при старте, восстановление совы, страховка тачпада/экрана.
@@ -108,10 +126,15 @@ public sealed class AppController
         _autoStart = _cfg.AutoStart;
         Task.Run(() =>
         {
-            _autoStart = Safe(AutoStart.IsEnabled, _cfg.AutoStart);
-            // самопочинка: после обновления/переноса exe задача указывает на пропавший путь
-            // и молча не стартует — пересоздаём на текущий exe
-            if (_autoStart) Safe(() => { AutoStart.RepairIfBroken(); return true; }, true);
+            // Та же блокировка, что у явной смены: запоздалый query старта не должен
+            // затереть только что включённый человеком автозапуск.
+            lock (_autoStartOperation)
+            {
+                lock (_autoStartLock) { if (_autoStartPending) return; }
+                bool actual = Safe(_autoStartTask.IsEnabled, _cfg.AutoStart);
+                if (actual) Safe(() => { _autoStartTask.RepairIfBroken(); return true; }, true);
+                lock (_autoStartLock) { if (!_autoStartPending) _autoStart = actual; }
+            }
         });
 
         // Тактильные настройки тачпада живут в нём самом — только прочитать для вкладки
@@ -179,10 +202,16 @@ public sealed class AppController
         _heavy?.Start();
 
         // «Режим совы»: восстановить после сбоя, включить заново, либо погасить, если фичу отключили
-        if (_cfg.Awake && !_cfg.OwlMode) { AwakeMode.Disable(_cfg); _cfg.Awake = false; _cfg.Save(); }
+        if (_cfg.Awake && !_cfg.OwlMode) { _disableAwake(); _cfg.Awake = false; _cfg.Save(); }
         // не включилась — не притворяемся: в меню и панели сова честно выключена (XIC-82)
-        else if (_cfg.Awake) { _cfg.Awake = AwakeMode.Enable(_cfg); _cfg.Save(); }
-        else if (_cfg.AwakeSavedLidAc is not null) { AwakeMode.Disable(_cfg); _cfg.Save(); }
+        else if (_cfg.Awake)
+        {
+            _cfg.Awake = _enableAwake();
+            _awakeFailed = !_cfg.Awake;
+            if (_awakeFailed) _disableAwake();
+            _cfg.Save();
+        }
+        else if (AwakeMode.HasLidBackup(_cfg)) { _disableAwake(); _cfg.Save(); }
 
         // Страховка «не залипает»: если тачпад/экран пришлось отключить персистентно,
         // после перезагрузки включаем их сами (в фоне — PnP-вызовы небыстрые). Решение
@@ -207,7 +236,7 @@ public sealed class AppController
     /// восстановления (прошлый возврат не удался) — XIC-82.</summary>
     public void Shutdown()
     {
-        if (_cfg.Awake || _cfg.AwakeSavedLidAc is not null) { AwakeMode.Disable(_cfg); _cfg.Save(); }
+        if (_cfg.Awake || AwakeMode.HasLidBackup(_cfg)) { _disableAwake(); _cfg.Save(); }
         _edges.Stop();
         _heavy?.Dispose();
     }
@@ -809,29 +838,86 @@ public sealed class AppController
     public void ToggleOwlFeature(bool on)
     {
         _cfg.OwlMode = on;
-        if (!on && _cfg.Awake) { AwakeMode.Disable(_cfg); _cfg.Awake = false; }
+        if (!on)
+        {
+            if (_cfg.Awake || AwakeMode.HasLidBackup(_cfg)) _disableAwake();
+            _cfg.Awake = false;
+            _awakeFailed = false;
+        }
         _cfg.Save();
         OwlFeatureChanged?.Invoke(); // перестроить раскладку панели (сова появляется/уходит)
     }
 
     /// <summary>«Режим совы»: включить/выключить «не спать».</summary>
-    public void ToggleAwake()
+    public void ToggleAwake() => SetAwake(!_cfg.Awake);
+
+    public void SetAwake(bool on)
     {
-        if (_cfg.Awake) { AwakeMode.Disable(_cfg); _cfg.Awake = false; }
-        else if (AwakeMode.Enable(_cfg)) { _cfg.Awake = true; }
+        if (on && !_cfg.OwlMode) return;
+        if (_cfg.Awake == on) return;
+        _awakeFailed = false;
+        if (!on) { _disableAwake(); _cfg.Awake = false; }
+        else
+        {
+            _cfg.Awake = _enableAwake();
+            _awakeFailed = !_cfg.Awake;
+            if (_awakeFailed) _disableAwake();
+        }
         _cfg.Save();
         AwakeChanged?.Invoke();
     }
 
-    /// <summary>Автозапуск. schtasks может блокировать до 10 с (WaitForExit) — не с UI-потока.</summary>
-    public void ToggleAutoStart(bool on)
+    /// <summary>Параметры совы применяются сразу, но выключенную сову не включают.</summary>
+    public void SetAwakeOptions(bool lidOnAc, bool lidOnBattery, bool keepDisplayOn)
     {
-        Task.Run(() =>
+        _cfg.OwlLidOnAc = lidOnAc;
+        _cfg.OwlLidOnBattery = lidOnBattery;
+        _cfg.OwlIgnoreDisplay = !keepDisplayOn;
+        _awakeFailed = false;
+        if (_cfg.Awake && !_enableAwake())
         {
-            Safe(() => { AutoStart.Set(on); return true; }, false);
-            _autoStart = Safe(AutoStart.IsEnabled, on);  // перечитать реальное состояние
-            _cfg.AutoStart = _autoStart;
-            _cfg.Save();
+            _disableAwake();
+            _cfg.Awake = false;
+            _awakeFailed = true;
+        }
+        _cfg.Save();
+        AwakeChanged?.Invoke();
+    }
+
+    /// <summary>Автозапуск: не блокируем UI и не запускаем две операции Планировщика сразу.</summary>
+    public void ToggleAutoStart(bool on) => _ = SetAutoStartAsync(on);
+
+    public Task SetAutoStartAsync(bool on)
+    {
+        lock (_autoStartLock)
+        {
+            if (_autoStartPending) return Task.CompletedTask;
+            _autoStartPending = true;
+            _autoStartFailed = false;
+        }
+        return Task.Run(() =>
+        {
+            try
+            {
+                lock (_autoStartOperation)
+                {
+                    bool applied = _autoStartTask.Set(on);
+                    bool actual = _autoStartTask.IsEnabled();
+                    lock (_autoStartLock)
+                    {
+                        _autoStart = actual;
+                        _autoStartFailed = !applied || actual != on;
+                    }
+                    _cfg.AutoStart = actual;
+                    _cfg.Save();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Ex("AppController.AutoStart", ex);
+                lock (_autoStartLock) _autoStartFailed = true;
+            }
+            finally { lock (_autoStartLock) _autoStartPending = false; }
         });
     }
 

@@ -238,6 +238,7 @@ public sealed class SettingsForm : Form
             _panes.Add(null);
         }
 
+        AddTab("settings.tab.power", NavGlyph.Perf, () => new PowerTab(_ui, _cfg, _act, rebuild));
         AddTab("settings.tab.general", NavGlyph.General, () => new GeneralTab(_ui, _cfg, _act, rebuild));
         AddTab("settings.tab.features", NavGlyph.Features, () => new FeaturesTab(_ui, _cfg, _act, rebuild));
         AddTab("settings.tab.battery", NavGlyph.Battery, () => new BatteryTab(_ui, _cfg, _act, rebuild));

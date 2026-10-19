@@ -57,8 +57,10 @@ public sealed class NavStrip : Panel
     protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
     protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
-    private int ItemH => _ui.Sc(40);
-    private int TopPad => _ui.Sc(12);
+    // На небольшом экране уменьшаем шаг, а не накладываем «О программе» на другие вкладки.
+    private int ItemH => Math.Min(_ui.Sc(40), Math.Max(_ui.Sc(24),
+        (Height - TopPad - _ui.Sc(16)) / Math.Max(1, Tabs.Length) - _ui.Sc(2)));
+    private int TopPad => _ui.Sc(70);
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
@@ -91,6 +93,12 @@ public sealed class NavStrip : Panel
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(_ui.T.NavBg);
         int pad = _ui.Sc(8);
+        TextRenderer.DrawText(g, Loc.T("app.name"), _ui.NameFont,
+            new Rectangle(_ui.Sc(20), _ui.Sc(17), Width - _ui.Sc(34), _ui.Sc(25)),
+            _ui.T.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(g, Loc.T("settings.nav.subtitle"), _ui.DescFont,
+            new Rectangle(_ui.Sc(20), _ui.Sc(43), Width - _ui.Sc(34), _ui.Sc(19)),
+            _ui.T.Text2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
         for (int i = 0; i < Tabs.Length; i++)
         {

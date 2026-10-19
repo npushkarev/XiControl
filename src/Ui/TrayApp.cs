@@ -766,8 +766,13 @@ public sealed class TrayApp : IDisposable
         {
             var act = new SettingsActions
             {
-                GetAutoStart = () => _controller.AutoStartEnabled,
-                SetAutoStart = _controller.ToggleAutoStart,
+                GetAutoStartState = () => _controller.AutoStartState,
+                SetAutoStart = (on, done) =>
+                {
+                    var run = _controller.SetAutoStartAsync(on);
+                    _osd.BeginInvoke(done); // сразу показать ожидание, после — фактический результат
+                    _ = run.ContinueWith(_ => _osd.BeginInvoke(done), TaskScheduler.Default);
+                },
                 Languages = () => _controller.Languages,
                 CurrentLanguage = () => _controller.CurrentLanguage,
                 SetLanguage = _controller.SetLanguage,
@@ -843,6 +848,9 @@ public sealed class TrayApp : IDisposable
                 SetTouchpadVibration = _controller.SetTouchpadVibration,
                 SetTouchpadPressure = _controller.SetTouchpadPressure,
                 SetOwlFeature = _controller.ToggleOwlFeature,
+                SetAwake = _controller.SetAwake,
+                SetAwakeOptions = _controller.SetAwakeOptions,
+                GetAwakeFailed = () => _controller.AwakeFailed,
                 SetCareLimit = _controller.SetCareLimit,
                 SoftChargeApplied = _chargeLimit.Rearm,
                 GetBatteryReport = BatteryReportCached,

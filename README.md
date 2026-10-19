@@ -1,5 +1,35 @@
 # Xi Control
 
+## npushkarev public fork
+
+Based on [Oksion/XiControl](https://github.com/Oksion/XiControl), GPL-3.0.
+This is a separate experimental fork build, not an official Oksion release or a winget upgrade.
+
+- **Settings → Power and lid** is the new landing section: startup, owl mode, independent
+  closed-lid choices for AC and battery, and whether to keep the display on.
+- Enable **Start with Windows** and **Keep the laptop awake**, then select the power sources.
+  The battery lid override is opt-in and off by default. For remote access, turn off
+  **Keep the display on when idle**. Startup runs at your account's sign-in, not before login.
+- Original AC/DC lid actions are restored when owl mode is disabled or the app exits normally;
+  unfinished restoration is retried at startup. Toggle owl off/on after changing the Windows power plan.
+  Never put a running laptop in a bag or obstruct ventilation. Manual sleep and critical-battery
+  protection still apply; Windows may restrict requests on Modern Standby.
+- Startup now reports pending, confirmed state and failure instead of assuming a click succeeded.
+- Refreshed settings: a status hero, branded navigation and wrapping setting titles, retaining
+  light/dark palettes and DPI scaling. Original icons and attribution are preserved.
+- **No watt-based TDP control yet.** Static research found a stock Intel IPF PL1/PL2 candidate;
+  ABI, runtime capabilities, safe bounds and rollback remain unverified.
+  [Research evidence and limitations (RU)](docs/18-fork-power-controls.md).
+
+<p align="center">
+  <img src="docs/img/power-settings-dark.png" width="620" alt="New Power and lid section, dark theme, Russian UI">
+</p>
+
+*Actual WinForms controls rendered with fake data at 200% DPI, without hardware access.
+[Light theme](docs/img/power-settings-light.png). Switch positions are examples, not this laptop's settings.*
+
+The upstream description follows. Its winget and update links refer to upstream, not this fork build.
+
 [![Release](https://img.shields.io/github/v/release/Oksion/XiControl?label=release&color=success)](https://github.com/Oksion/XiControl/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Oksion/XiControl/total?label=downloads)](https://github.com/Oksion/XiControl/releases)
 [![Build](https://img.shields.io/github/actions/workflow/status/Oksion/XiControl/ci.yml?branch=main&label=build)](https://github.com/Oksion/XiControl/actions/workflows/ci.yml)
@@ -128,11 +158,11 @@ where there are no watts to show, you can watch load or degrees instead.*
   control; a disabled feature disappears from the menu and panel entirely.
 - 🎨 The tray icon changes with the mode, monochrome to match a light/dark taskbar;
   a dark menu matching the system theme (switches on the fly).
-- 🦉 **"Owl mode"** — don't sleep, and don't turn off the display *(optional)*; a closed lid on
-  AC power only turns off the display (on battery — regular sleep). Owl in the panel / a checkbox
-  in the menu; power timings aren't changed, the lid action is restored afterwards.
-  If you only need the machine to stay awake (for a remote session, say), set
-  `"OwlIgnoreDisplay": true` in config — the screen then blanks as usual instead of burning idle.
+- 🦉 **"Owl mode"** — keep the system awake, optionally with the display on. Settings → Power and lid:
+  independent closed-lid choices for AC (`OwlLidOnAc`, on by default) and battery
+  (`OwlLidOnBattery`, off by default), plus display holding (`OwlIgnoreDisplay` is the inverse flag).
+  If a source is not selected, its Windows lid setting applies. Owl in the panel / menu;
+  power timings are unchanged, and lid actions are restored afterwards.
   The feature can be hidden entirely (`"OwlMode": false` in config).
 - 🖥️ **Auto refresh rate** — plug in the charger → 120 Hz, unplug → 60 Hz
   (rates configurable in config: `AcRefreshRate`/`BatteryRefreshRate`; if the panel lacks
