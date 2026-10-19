@@ -30,7 +30,7 @@ internal static class PowerLimitsPanel
         string context = Loc.T("settings.tdp.editor.context", name, source,
             Loc.T(isActive ? "settings.tdp.editor.active" : "settings.tdp.editor.inactive"));
         pane.Controls.Add(ui.Row(context, Loc.T(isActive ? "settings.tdp.editor.activehint" : "settings.tdp.editor.savedhint"), check));
-        if (view.Status is PowerLimitStatus.Busy or PowerLimitStatus.Applied or PowerLimitStatus.Restored)
+        if (view.Status is PowerLimitStatus.Busy or PowerLimitStatus.Applied or PowerLimitStatus.Restored or PowerLimitStatus.Changed)
             pane.Controls.Add(new Label { Text = Loc.T(StatusKey(view.Status)), AutoSize = true, MaximumSize = new Size(ui.RowW, 0),
                 Font = ui.DescFont, ForeColor = ui.T.Text2, Margin = new Padding(0, 0, 0, ui.Sc(5)) });
         if (view.Status == PowerLimitStatus.Failed) ui.AddNote(pane, "settings.tdp.error");

@@ -65,13 +65,19 @@ public sealed class PowerModeEditorTests
     }
 
     [Fact]
-    public void Values_пересборка_не_теряет_первый_seed_при_новом_снимке_или_списке()
+    public void Values_чистое_поле_обновляется_после_свежего_чтения_или_смены_профиля()
     {
         _editor.Values(PerfMode.Quiet, true, [], Snapshot(25000, 40000));
+        _editor.Values(PerfMode.Quiet, true, [], Snapshot(20000, 30000))
+            .Should().Be(new PowerModeDraft(20, 30));
         PowerModeProfile[] profiles = [new(PerfMode.Quiet, true, 30, 50)];
         _editor.Values(PerfMode.Quiet, true, profiles, Snapshot(60000, 90000))
-            .Should().Be(new PowerModeDraft(25, 40));
+            .Should().Be(new PowerModeDraft(30, 50));
         _editor.Dirty(PerfMode.Quiet, true).Should().BeFalse();
+        _editor.Change(PerfMode.Quiet, true, 25, 45);
+        _editor.Values(PerfMode.Quiet, true, [], Snapshot(20000, 30000))
+            .Should().Be(new PowerModeDraft(25, 45));
+        _editor.Dirty(PerfMode.Quiet, true).Should().BeTrue();
     }
 
     [Fact]

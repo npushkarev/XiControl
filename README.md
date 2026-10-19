@@ -2,6 +2,14 @@
 
 ## npushkarev public fork
 
+**fork.5 — acceptance-test fixes:** recovery is now bound to the OEM performance mode as well as
+AC/DC, preventing old limits from being restored into a different mode. Stale snapshots are cleared,
+the visible editor reacts to context changes, and clean inputs refresh without losing dirty drafts.
+Real Save-and-apply **25/65 → 24/64 → 25/65 W**, lid-setting restoration, task creation/removal,
+packaged EXE startup, tray opening and normal exit passed; **1110 unit tests and 13 real-control UI scenarios** passed.
+[Full evidence and remaining limits (RU)](docs/19-acceptance-tests.md). Physical lid closure, sleep and
+reboot were not performed by the owner's choice; this remains an experimental build.
+
 **0.18.0-fork.4: one mode editor for TDP.** Open the **CPU power · TDP** card in the quick panel.
 Choose a mode tile before editing — its saved watts are loaded automatically. The selected mode,
 active state and AC/DC source are shown above the fields. The active mode has one **Save and apply**

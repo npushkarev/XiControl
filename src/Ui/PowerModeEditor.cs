@@ -41,11 +41,12 @@ public sealed class PowerModeEditor
         ArgumentNullException.ThrowIfNull(profiles);
         var key = (mode, onAc);
         bool cached = _drafts.TryGetValue(key, out var draft);
-        if (cached && draft.Original is not null) return draft.Current;
+        if (cached && draft.Original is not null && draft.Current != draft.Original) return draft.Current;
         var saved = PowerModeProfiles.Find(profiles, mode, onAc);
+        if (cached && current is null && saved is null) return draft.Current; // нет свежих данных — не заменять известное шаблоном 10/10
         // Сохранённые ватты принадлежат выбранному режиму, а снимок — текущему: не клэмпим одно другим.
         var seed = saved is null ? Seed(current) : new PowerModeDraft(saved.Pl1Watts, saved.Pl2Watts);
-        var values = cached ? draft.Current : seed;
+        var values = cached && draft.Original is null ? draft.Current : seed;
         _drafts[key] = (seed, values);
         return values;
     }

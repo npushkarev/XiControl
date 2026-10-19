@@ -1,4 +1,5 @@
 using System.Text.Json;
+using XiControl.Wmi;
 
 namespace XiControl.SystemIntegration;
 
@@ -59,7 +60,7 @@ public interface IPowerLimitBackend
 }
 
 public sealed record PowerLimitJournal(int OriginalPl1, int OriginalPl2, int TargetPl1, int TargetPl2,
-    bool? OnAc = null);
+    bool? OnAc = null, PerfMode? Mode = null);
 
 public interface IPowerLimitJournal
 {
@@ -75,34 +76,41 @@ public interface IPowerLimitJournal
 /// аппаратным CAS и не исключает гонку с DTT/прошивкой между последним GET и SET.
 /// </summary>
 public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJournal journal,
-    Func<bool>? isOnline = null, Func<int>? generation = null)
+    Func<bool>? isOnline = null, Func<int>? generation = null, Func<PerfMode?>? getMode = null)
 {
     private bool? _baselineSource;
     private int _baselineGeneration;
+    private PerfMode? _baselineMode;
     public PowerLimitSnapshot? Baseline { get; private set; }
     public bool Active => journal.Load() is not null;
 
-    public void Invalidate() { Baseline = null; _baselineSource = null; }
+    public void Invalidate() { Baseline = null; _baselineSource = null; _baselineMode = null; }
 
     public PowerLimitSnapshot Read()
     {
         bool? source = isOnline?.Invoke();
         int epoch = generation?.Invoke() ?? 0;
+        PerfMode? mode = CurrentMode();
         var current = backend.Read();
-        CheckContext(source, epoch);
+        CheckContext(source, epoch, mode);
         if (!Active)
         {
             Baseline = current;
             _baselineSource = source;
             _baselineGeneration = epoch;
+            _baselineMode = mode;
         }
         return current;
     }
 
-    private void CheckContext(bool? source, int epoch)
+    private PerfMode? CurrentMode() => getMode?.Invoke() is PerfMode mode && Enum.IsDefined(mode) ? mode : null;
+
+    private void CheckContext(bool? source, int epoch, PerfMode? mode)
     {
-        if ((isOnline is not null && source != isOnline()) || (generation?.Invoke() ?? 0) != epoch)
-            throw new InvalidOperationException("Power source or session changed; read limits again in the original context.");
+        // WMI-чтение режима может занять время: источник и поколение сверяем после него.
+        if ((getMode is not null && mode != CurrentMode()) || (isOnline is not null && source != isOnline())
+            || (generation?.Invoke() ?? 0) != epoch)
+            throw new InvalidOperationException("Power source, performance mode or session changed; read limits again in the original context.");
     }
 
     public void Apply(int pl1Watts, int pl2Watts)
@@ -114,16 +122,21 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
         int target1 = pl1Watts * 1000, target2 = pl2Watts * 1000;
         bool? source = isOnline?.Invoke();
         int epoch = generation?.Invoke() ?? 0;
-        if (isOnline is not null && Baseline is null)
+        PerfMode? mode = CurrentMode();
+        if (getMode is not null && mode is null)
+            throw new InvalidOperationException("Read a known performance mode before applying power limits.");
+        if ((isOnline is not null || getMode is not null) && Baseline is null)
             throw new InvalidOperationException("Read power limits in this power context before applying.");
-        if (Baseline is not null) CheckContext(_baselineSource, _baselineGeneration);
+        if (Baseline is not null) CheckContext(_baselineSource, _baselineGeneration, _baselineMode);
         var pending = journal.Load();
         var current = backend.Read();
-        CheckContext(source, epoch);
+        CheckContext(source, epoch, mode);
         RequireControl(current);
         if (pending is not null)
         {
             Validate(pending);
+            if (getMode is not null && pending.Mode != mode)
+                throw new InvalidOperationException("Recover the pending power limits in their original performance mode first.");
             RequireValues(current, pending.TargetPl1, pending.TargetPl2);
             if (current.Pl1Milliwatts == target1 && current.Pl2Milliwatts == target2) return;
         }
@@ -146,15 +159,16 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
             Baseline = baseline;
             _baselineSource = source;
             _baselineGeneration = epoch;
+            _baselineMode = mode;
         }
         if (current.Pl1Milliwatts == target1 && current.Pl2Milliwatts == target2) return;
-        CheckContext(source, epoch);
-        journal.Save(new(current.Pl1Milliwatts, current.Pl2Milliwatts, target1, target2, source));
+        CheckContext(source, epoch, mode);
+        journal.Save(new(current.Pl1Milliwatts, current.Pl2Milliwatts, target1, target2, source, mode));
         try
         {
-            WritePair(current, target1, target2, source: source, epoch: epoch);
+            WritePair(current, target1, target2, source: source, epoch: epoch, mode: mode);
             RequireValues(backend.Read(), target1, target2);
-            CheckContext(source, epoch);
+            CheckContext(source, epoch, mode);
         }
         catch (Exception applyError)
         {
@@ -174,10 +188,14 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
         Validate(pending);
         bool? source = isOnline?.Invoke();
         int epoch = generation?.Invoke() ?? 0;
+        PerfMode? mode = CurrentMode();
         if (isOnline is not null && pending.OnAc != source)
             throw new InvalidOperationException("Recovery belongs to another or unknown power source; return to that source first.");
+        // Совпавшие ватты другого OEM-режима не доказывают ownership старой сессии.
+        if (getMode is not null && (mode is null || pending.Mode != mode))
+            throw new InvalidOperationException("Recovery belongs to another or unknown performance mode; return to that mode first.");
         var current = backend.Read();
-        CheckContext(source, epoch);
+        CheckContext(source, epoch, mode);
         RequireControl(current);
         int target1 = current.Pl1Milliwatts == pending.TargetPl1 ? pending.OriginalPl1 : current.Pl1Milliwatts;
         int target2 = current.Pl2Milliwatts == pending.TargetPl2 ? pending.OriginalPl2 : current.Pl2Milliwatts;
@@ -190,14 +208,14 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
             pending = index == 1 ? pending with { TargetPl1 = pending.OriginalPl1 }
                 : pending with { TargetPl2 = pending.OriginalPl2 };
             journal.Save(pending);
-        }, source, epoch);
+        }, source, epoch, mode);
         RequireValues(backend.Read(), target1, target2);
-        CheckContext(source, epoch);
+        CheckContext(source, epoch, mode);
         journal.Clear();
     }
 
     private void WritePair(PowerLimitSnapshot current, int target1, int target2,
-        Action<int>? written = null, bool? source = null, int epoch = 0)
+        Action<int>? written = null, bool? source = null, int epoch = 0, PerfMode? mode = null)
     {
         int[] order = target1 <= current.Pl2Milliwatts ? [1, 2] : [2, 1];
         foreach (int index in order)
@@ -205,7 +223,7 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
             int target = index == 1 ? target1 : target2;
             if ((index == 1 ? current.Pl1Milliwatts : current.Pl2Milliwatts) == target) continue;
             RequireValues(backend.Read(), current.Pl1Milliwatts, current.Pl2Milliwatts);
-            CheckContext(source, epoch); // ещё раз непосредственно перед SET, не только перед постановкой в очередь
+            CheckContext(source, epoch, mode); // ещё раз непосредственно перед SET, не только перед постановкой в очередь
             backend.SetLimit(index, target);
             current = index == 1 ? current with { Pl1Milliwatts = target } : current with { Pl2Milliwatts = target };
             RequireValues(backend.Read(), current.Pl1Milliwatts, current.Pl2Milliwatts);
@@ -231,7 +249,8 @@ public sealed class PowerLimitSession(IPowerLimitBackend backend, IPowerLimitJou
         // журнала не обязана быть аппаратной парой. Каждое число всё равно проверяем.
         if (!PowerLimitSnapshot.ValidPower(entry.OriginalPl1) || !PowerLimitSnapshot.ValidPower(entry.OriginalPl2) ||
             !PowerLimitSnapshot.ValidPower(entry.TargetPl1) || !PowerLimitSnapshot.ValidPower(entry.TargetPl2) ||
-            entry.OriginalPl1 > entry.OriginalPl2 || entry.TargetPl1 > entry.OriginalPl1 || entry.TargetPl2 > entry.OriginalPl2)
+            entry.OriginalPl1 > entry.OriginalPl2 || entry.TargetPl1 > entry.OriginalPl1 || entry.TargetPl2 > entry.OriginalPl2 ||
+            (entry.Mode is PerfMode mode && !Enum.IsDefined(mode)))
             throw new InvalidOperationException("Invalid power-limit recovery journal.");
     }
 }

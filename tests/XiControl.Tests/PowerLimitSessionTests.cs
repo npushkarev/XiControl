@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using XiControl.SystemIntegration;
+using XiControl.Wmi;
 using Xunit;
 
 namespace XiControl.Tests;
@@ -485,6 +486,108 @@ public sealed class PowerLimitSessionTests
         Action apply = () => session.Apply(20, 30);
         apply.Should().Throw<InvalidOperationException>();
         _backend.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Режим_привязан_к_baseline_и_журналу_даже_при_тех_же_ваттах()
+    {
+        PerfMode? mode = PerfMode.Auto;
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => mode);
+        session.Read();
+        mode = PerfMode.Quiet;
+        Action apply = () => session.Apply(20, 30);
+        apply.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().BeEmpty();
+        _journal.Value.Should().BeNull();
+        session.Read();
+        session.Apply(20, 30);
+        _journal.Value!.Mode.Should().Be(PerfMode.Quiet);
+    }
+
+    [Fact]
+    public void Restore_не_поднимает_лимиты_другого_режима_при_совпавших_целевых_ваттах()
+    {
+        PerfMode? mode = PerfMode.Auto;
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => mode);
+        session.Read();
+        session.Apply(30, 50);
+        _journal.Value!.Mode.Should().Be(PerfMode.Auto);
+        mode = PerfMode.Quiet;
+        _backend.Writes.Clear();
+        Action restore = session.Restore;
+        restore.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().BeEmpty();
+        _journal.Value.Should().NotBeNull();
+        mode = PerfMode.Auto;
+        session.Restore();
+        _backend.Current.Pl1Milliwatts.Should().Be(40000);
+        _backend.Current.Pl2Milliwatts.Should().Be(65000);
+        _journal.Value.Should().BeNull();
+    }
+
+    [Fact]
+    public void Неизвестный_режим_разрешает_чтение_но_не_Apply_или_Restore()
+    {
+        PerfMode? mode = null;
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => mode);
+        session.Read().Pl1Milliwatts.Should().Be(40000);
+        Action apply = () => session.Apply(30, 50);
+        apply.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().BeEmpty();
+        mode = PerfMode.Auto;
+        session.Read();
+        session.Apply(30, 50);
+        mode = null;
+        _backend.Writes.Clear();
+        Action restore = session.Restore;
+        restore.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().BeEmpty();
+        _journal.Value.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Старый_журнал_без_режима_не_восстанавливается_в_режимной_сессии()
+    {
+        _journal.Value = new(40000, 65000, 30000, 50000, true);
+        _backend.Current = _backend.Current with { Pl1Milliwatts = 30000, Pl2Milliwatts = 50000 };
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => PerfMode.Auto);
+        Action restore = session.Restore;
+        restore.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().BeEmpty();
+        _journal.Value.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Смена_режима_перед_вторым_SET_сохраняет_журнал_без_чужого_отката()
+    {
+        PerfMode? mode = PerfMode.Auto;
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => mode);
+        session.Read();
+        _backend.AfterWrite = (_, _) => mode = PerfMode.Quiet;
+        Action apply = () => session.Apply(30, 50);
+        apply.Should().Throw<AggregateException>();
+        _backend.Writes.Should().Equal((1, 30000));
+        _journal.Value.Should().Be(new PowerLimitJournal(40000, 65000, 30000, 50000, true, PerfMode.Auto));
+        mode = PerfMode.Auto;
+        _backend.AfterWrite = null;
+        session.Restore();
+        _backend.Current.Pl1Milliwatts.Should().Be(40000);
+        _journal.Value.Should().BeNull();
+    }
+
+    [Fact]
+    public void Смена_режима_между_полями_Restore_не_пишет_второе_поле()
+    {
+        PerfMode? mode = PerfMode.Auto;
+        var session = new PowerLimitSession(_backend, _journal, () => true, getMode: () => mode);
+        session.Read();
+        session.Apply(20, 30);
+        _backend.Writes.Clear();
+        _backend.AfterWrite = (_, _) => mode = PerfMode.Quiet;
+        Action restore = session.Restore;
+        restore.Should().Throw<InvalidOperationException>();
+        _backend.Writes.Should().Equal((2, 65000));
+        _journal.Value.Should().Be(new PowerLimitJournal(40000, 65000, 20000, 65000, true, PerfMode.Auto));
     }
 
     [Fact]

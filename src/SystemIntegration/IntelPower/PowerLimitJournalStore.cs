@@ -1,6 +1,7 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
+using XiControl.Wmi;
 
 namespace XiControl.SystemIntegration;
 
@@ -33,6 +34,8 @@ public sealed class PowerLimitJournalStore : IPowerLimitJournal
 
     public void Save(PowerLimitJournal journal)
     {
+        if (journal.Mode is PerfMode mode && !Enum.IsDefined(mode))
+            throw new InvalidDataException("Invalid power recovery journal mode");
         if (!NativePowerLimitBackend.IsElevated) throw new UnauthorizedAccessException("Power recovery journal requires administrator rights");
         Directory.CreateDirectory(_directory);
         var security = new DirectorySecurity();

@@ -432,6 +432,7 @@ public sealed class AppController
         if (!Apply(mode)) { FirmwareFailed?.Invoke(); return; }
         _cfg.RememberMode(mode);
         _modeSync?.Request();
+        _powerLimits?.InvalidateModeSnapshot();
         ModeSet?.Invoke(mode);
     }
 
@@ -440,7 +441,11 @@ public sealed class AppController
     /// питания Windows (XIC-96). Своих смен 0x16 тоже касается: TrayApp гасит их эхо для OSD,
     /// поэтому сверка зовётся до этой дедупликации. Лишний вызов ничего не стоит.
     /// </summary>
-    public void SyncPowerMode() => _modeSync?.Request();
+    public void SyncPowerMode()
+    {
+        _modeSync?.Request();
+        _powerLimits?.InvalidateModeSnapshot();
+    }
 
     /// <summary>Режим питания Windows вместе с режимом ноутбука вкл/выкл (XIC-96). Выключение
     /// возвращает «сбалансированный» там, где стоит записанное нами.</summary>
@@ -476,6 +481,7 @@ public sealed class AppController
 
             _cfg.RememberMode(next);
             _modeSync?.Request();
+            _powerLimits?.InvalidateModeSnapshot();
             ModeCycled?.Invoke(next);
             return;
         }

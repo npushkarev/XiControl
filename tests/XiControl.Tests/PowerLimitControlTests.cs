@@ -11,11 +11,14 @@ public sealed class PowerLimitControlTests
     {
         public PowerLimitSnapshot Current = new(40000, 65000, true, true, 0, true, 25000);
         public readonly List<(int Index, int Value)> Writes = [];
-        public PowerLimitSnapshot Read() => Current;
+        public bool FailRead;
+        public Action? AfterWrite;
+        public PowerLimitSnapshot Read() => FailRead ? throw new IOException("read unavailable") : Current;
         public void SetLimit(int index, int milliwatts)
         {
             Writes.Add((index, milliwatts));
             Current = index == 1 ? Current with { Pl1Milliwatts = milliwatts } : Current with { Pl2Milliwatts = milliwatts };
+            AfterWrite?.Invoke();
         }
     }
 
@@ -150,6 +153,94 @@ public sealed class PowerLimitControlTests
         await control.SaveEditorAsync(PerfMode.Auto, true, 30, 50, true);
         _backend.Writes.Should().BeEmpty();
         _profiles.Saves.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Restore_и_Dispose_не_поднимают_совпавшие_ватты_другого_режима()
+    {
+        var control = Make();
+        try
+        {
+            await control.RefreshAsync();
+            await control.SaveEditorAsync(PerfMode.Auto, true, 30, 50, true);
+            _mifs.Mode = PerfMode.Quiet;
+            _backend.Writes.Clear();
+            await control.RestoreAsync();
+            control.View.Status.Should().Be(PowerLimitStatus.Failed);
+            control.View.Current.Should().BeNull();
+            control.View.Mode.Should().Be(PerfMode.Quiet);
+            _backend.Writes.Should().BeEmpty();
+            _journal.Entry.Should().NotBeNull();
+        }
+        finally { control.Dispose(); }
+        _backend.Writes.Should().BeEmpty();
+        _journal.Entry.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Смена_режима_между_полями_Apply_не_сохраняет_профиль_и_не_откатывает_в_чужом_режиме()
+    {
+        using var control = Make();
+        await control.RefreshAsync();
+        _backend.AfterWrite = () => _mifs.Mode = PerfMode.Quiet;
+        await control.SaveEditorAsync(PerfMode.Auto, true, 30, 50, true);
+        control.View.Status.Should().Be(PowerLimitStatus.Failed);
+        control.View.Current.Should().BeNull();
+        _backend.Writes.Should().Equal((1, 30000));
+        _profiles.Saves.Should().Be(0);
+        _journal.Entry!.Mode.Should().Be(PerfMode.Auto);
+    }
+
+    [Fact]
+    public async Task SelectMode_не_применяет_профиль_если_прошивка_подтвердила_другой_режим()
+    {
+        using var control = Make();
+        _profiles.Entries = new[] { new PowerModeProfile(PerfMode.Turbo, true, 30, 50) };
+        await control.SelectModeAsync(PerfMode.Turbo, () => true);
+        control.View.Status.Should().Be(PowerLimitStatus.Failed);
+        control.View.Mode.Should().Be(PerfMode.Auto);
+        _backend.Writes.Should().BeEmpty();
+        _journal.Entry.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Suspend_очищает_старый_снимок_baseline_и_режим()
+    {
+        using var control = Make();
+        await control.RefreshAsync();
+        _power.RaisePower(Microsoft.Win32.PowerModes.Suspend);
+        control.View.Status.Should().Be(PowerLimitStatus.Changed);
+        control.View.Current.Should().BeNull();
+        control.View.Baseline.Should().BeNull();
+        control.View.Mode.Should().BeNull();
+        control.View.CanApply.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Ошибка_повторного_чтения_не_показывает_прежние_ватты_как_текущие()
+    {
+        using var control = Make();
+        await control.RefreshAsync();
+        _backend.FailRead = true;
+        await control.RefreshAsync();
+        control.View.Status.Should().Be(PowerLimitStatus.Failed);
+        control.View.Current.Should().BeNull();
+        control.View.CanApply.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Внешняя_смена_режима_снимает_готовность_UI_без_аппаратной_записи()
+    {
+        using var control = Make();
+        await control.RefreshAsync();
+        _mifs.Mode = PerfMode.Quiet;
+        control.InvalidateModeSnapshot();
+        control.View.Status.Should().Be(PowerLimitStatus.Changed);
+        control.View.Current.Should().BeNull();
+        control.View.Baseline.Should().BeNull();
+        control.View.Mode.Should().BeNull();
+        control.View.CanApply.Should().BeFalse();
+        _backend.Writes.Should().BeEmpty();
     }
 
     [Fact]

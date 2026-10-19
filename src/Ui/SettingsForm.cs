@@ -43,6 +43,10 @@ public sealed class SettingsForm : Form
     // смена разрешения/масштаба сыплется пачкой событий — гасим дребезг и пересобираем один раз
     // (шов IAppTimer тут не нужен: окно юнит-тестами не покрывается)
     private readonly UiTimer _rescale = new() { Interval = 250 };
+    // Только пока окно открыто: сравнение готового DTO не обращается к железу.
+    private readonly UiTimer _powerState = new() { Interval = 250 };
+    private PowerLimitView? _lastPowerView;
+    private bool _lastPowerSource;
 
     // MifsClient сюда сознательно не передаётся: окно железо не трогает — все «умные»
     // операции идут через колбэки SettingsActions в TrayApp/AppController.
@@ -71,6 +75,15 @@ public sealed class SettingsForm : Form
         // под клиента) — WM_DPICHANGED тогда не приходит, а пересобраться всё равно надо
         _rescale.Tick += () => { _rescale.Stop(); if (Visible) Rescale(); };
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        _powerState.Tick += () =>
+        {
+            if (!Visible || IsDisposed) return;
+            var current = _act.GetPowerLimits();
+            bool source = _act.IsOnlineNow();
+            if (current == _lastPowerView && source == _lastPowerSource) return;
+            _lastPowerView = current; _lastPowerSource = source;
+            if (_tab < _tabKeys.Length && _tabKeys[_tab] is "settings.tab.power" or "settings.tab.perf") BuildAll();
+        };
 
         BuildAll();
     }
@@ -81,6 +94,7 @@ public sealed class SettingsForm : Form
         {
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             _rescale.Dispose();
+            _powerState.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -135,6 +149,17 @@ public sealed class SettingsForm : Form
         if (!IsHandleCreated || IsDisposed || !Visible) return;
         try { BeginInvoke(new Action(() => { _rescale.Stop(); _rescale.Start(); })); }
         catch (ObjectDisposedException) { /* окно закрылось, пока событие шло к нам */ }
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
+        {
+            _lastPowerView = _act.GetPowerLimits(); _lastPowerSource = _act.IsOnlineNow();
+            _powerState.Start();
+        }
+        else _powerState.Stop();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

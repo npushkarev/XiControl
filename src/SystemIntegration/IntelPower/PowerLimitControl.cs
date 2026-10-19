@@ -39,7 +39,7 @@ public sealed class PowerLimitControl : IDisposable
         _profileStore = profiles ?? new PowerModeProfilesStore();
         _isElevated = isElevated ?? (() => NativePowerLimitBackend.IsElevated);
         _session = new PowerLimitSession(_backend, journal ?? new PowerLimitJournalStore(),
-            () => power.IsOnline, () => Volatile.Read(ref _generation));
+            () => power.IsOnline, () => Volatile.Read(ref _generation), _mifs is null ? null : ReadCurrentMode);
         power.PowerModeChanged += OnPower;
         power.SessionEnding += OnSessionEnding;
     }
@@ -165,16 +165,24 @@ public sealed class PowerLimitControl : IDisposable
         }
         Context();
         _session.Read();
+        if (_mifs is not null && _cachedMode != mode)
+        {
+            _session.Invalidate();
+            throw new InvalidOperationException("The requested performance mode was not confirmed; power limits were not applied.");
+        }
         Context();
         _session.Apply(profile.Pl1Watts, profile.Pl2Watts);
         Publish(PowerLimitStatus.Applied, _backend.Read(), null);
     });
 
-    private void ReadMode()
+    private void ReadMode() => ReadCurrentMode();
+
+    private PerfMode? ReadCurrentMode()
     {
-        // Только с воркера; UI получает последнее подтверждённое чтение, не WMI.
-        try { _cachedMode = _mifs?.GetPerfMode(); }
+        // Только в операции; UI получает последнее подтверждённое чтение, не WMI.
+        try { _cachedMode = _mifs?.GetPerfMode() is PerfMode mode && Enum.IsDefined(mode) ? mode : null; }
         catch (Exception ex) { _cachedMode = null; Log.Ex("IntelPower.Mode", ex); }
+        return _cachedMode;
     }
 
     private void LoadProfiles()
@@ -205,7 +213,7 @@ public sealed class PowerLimitControl : IDisposable
                 catch (Exception ex)
                 {
                     Log.Ex("IntelPower", ex);
-                    Publish(PowerLimitStatus.Failed, View.Current, ex.Message);
+                    Publish(PowerLimitStatus.Failed, null, ex.Message);
                 }
             }
         });
@@ -221,7 +229,17 @@ public sealed class PowerLimitControl : IDisposable
             _view = new(status, snapshot, _session.Baseline, active,
                 (status is PowerLimitStatus.Ready or PowerLimitStatus.Applied or PowerLimitStatus.Restored)
                 && journalKnown && _session.Baseline is not null
-                && snapshot?.CanControl == true && _isElevated(), error, _cachedMode);
+                && snapshot?.CanControl == true && (_mifs is null || _cachedMode is not null) && _isElevated(), error, _cachedMode);
+    }
+
+    /// <summary>Уведомление о смене OEM-режима: не пишет в железо и не мешает собственной операции.</summary>
+    public void InvalidateModeSnapshot()
+    {
+        lock (_stateLock)
+        {
+            if (_disposed || _view.Status == PowerLimitStatus.Busy) return;
+            _view = new(PowerLimitStatus.Changed, null, null, _view.Active, false, null);
+        }
     }
 
     private void OnPower(PowerModes mode)
@@ -229,6 +247,7 @@ public sealed class PowerLimitControl : IDisposable
         if (mode == PowerModes.Suspend)
         {
             Interlocked.Increment(ref _generation);
+            InvalidateView();
             ReleaseOwnedLimits();
             return;
         }
@@ -236,6 +255,7 @@ public sealed class PowerLimitControl : IDisposable
         {
             Interlocked.Increment(ref _generation);
             _lastOnline = _power.IsOnline;
+            InvalidateView();
             _ = Task.Run(ReleaseOwnedLimits); // не перезаписываем лимит для нового источника
         }
     }
@@ -243,7 +263,14 @@ public sealed class PowerLimitControl : IDisposable
     private void OnSessionEnding()
     {
         Interlocked.Increment(ref _generation);
+        InvalidateView();
         ReleaseOwnedLimits();
+    }
+
+    private void InvalidateView()
+    {
+        lock (_stateLock)
+            _view = new(PowerLimitStatus.Changed, null, null, _view.Active, false, null);
     }
 
     private void ReleaseOwnedLimits()
@@ -255,9 +282,10 @@ public sealed class PowerLimitControl : IDisposable
             try
             {
                 if (_session.Active) _session.Restore();
-                lock (_stateLock) _view = _view with { Status = PowerLimitStatus.Changed, Active = false, CanApply = false };
+                _cachedMode = null;
+                lock (_stateLock) _view = new(PowerLimitStatus.Changed, null, null, false, false, null);
             }
-            catch (Exception ex) { Log.Ex("IntelPower.Restore", ex); Publish(PowerLimitStatus.Failed, View.Current, ex.Message); }
+            catch (Exception ex) { Log.Ex("IntelPower.Restore", ex); Publish(PowerLimitStatus.Failed, null, ex.Message); }
         }
     }
 
