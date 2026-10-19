@@ -27,6 +27,13 @@ BenchmarkDotNet.Artifacts/
 *.coverage
 *.coveragexml
 
+# Native build outputs (source headers and build scripts stay tracked)
+*.dll
+*.obj
+*.lib
+*.exp
+*.pdb
+
 # Local diagnostics / editor and OS debris
 *.log
 *.tmp

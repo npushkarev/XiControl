@@ -25,6 +25,7 @@ public sealed class PerfTab : SettingsPane
         _act = act;
 
         ui.AddHeader(this, "settings.tab.perf", "settings.perf.sub");
+        PowerLimitsPanel.Add(this, ui, act, rebuild);
         ui.AddGroup(this, "settings.perf.modes");
         // Любой режим можно убрать с глаз — кроме случая, когда видимых осталось два: набор,
         // из которого нечего выбирать, бессмысленен. Тумблер последних двух гасим, а не даём

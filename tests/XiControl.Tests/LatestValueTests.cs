@@ -50,14 +50,18 @@ public sealed class LatestValueTests
         // Провайдер завис (после сна): тик UI каждую секунду зовёт Request — потоков не прибавляется.
         using var release = new ManualResetEventSlim();
         int calls = 0;
-        var v = Make(() => { Interlocked.Increment(ref calls); release.Wait(); return 7; });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var v = Make(() => { Interlocked.Increment(ref calls); entered.TrySetResult(); release.Wait(); return 7; });
 
         var first = v.Request();
-        for (int i = 0; i < 10; i++) v.Request().Should().BeSameAs(first);
-        await Task.Delay(50);
-        calls.Should().Be(1);
-
-        release.Set();
+        try
+        {
+            for (int i = 0; i < 10; i++) v.Request().Should().BeSameAs(first);
+            // Ждём реальный вход воркера: 50 мс не гарантия под нагрузкой компилятора/CI.
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            calls.Should().Be(1);
+        }
+        finally { release.Set(); }
         await first;
         v.Latest.Should().Be(7);
         await v.Request(); // освободилось — следующий тик снова читает

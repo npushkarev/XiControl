@@ -57,6 +57,7 @@ internal static class Program
             clamp: (level, online) => sp.GetRequiredService<BrightnessCapGuard>().ClampRestore(level, online)));
         services.AddSingleton<PowerProfileGuard>();
         services.AddSingleton<PowerModeSync>();      // режим питания Windows вместе с режимом (XIC-96)
+        services.AddSingleton<PowerLimitControl>();  // ручные PL1/PL2 через штатный Intel IPF, без записи на старте
         services.AddSingleton<TravelChargeMonitor>();
         services.AddSingleton<ChargeLimitWatcher>();   // «заряд дошёл до порога» → вебхук (XIC-75)
         services.AddSingleton<TrayIconController>();

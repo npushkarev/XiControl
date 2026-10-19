@@ -29,6 +29,14 @@
     <PackageReference Include="Svg" Version="3.4.7" />
   </ItemGroup>
 
+  <!-- Native bridge собирается отдельно MSVC; тестам и обычной сборке компилятор C++ не нужен.
+       Для ZIP-пакета передайте -p:IntelPowerBridgePath=<absolute XiIntelPower.dll>. -->
+  <ItemGroup Condition="'$(IntelPowerBridgePath)' != ''">
+    <Content Include="$(IntelPowerBridgePath)" Link="XiIntelPower.dll"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+             ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- SVG-иконки (OSD + трей) встраиваются в сборку; имена файлов уникальны -->
     <EmbeddedResource Include="..\assets\svg\**\*.svg" LogicalName="svg.%(Filename).svg" />

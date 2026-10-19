@@ -11,6 +11,8 @@ public sealed class PowerTab : SettingsPane
         ui.AddHero(this, "settings.tab.power", "settings.power.sub",
             Loc.T(cfg.Awake ? "settings.power.active" : "settings.power.idle"), cfg.Awake);
 
+        PowerLimitsPanel.Add(this, ui, act, rebuild);
+
         ui.AddGroup(this, "settings.power.startup");
         var startup = act.GetAutoStartState();
         var autoStart = ui.Toggle(startup.Enabled, on => act.SetAutoStart(on, rebuild));

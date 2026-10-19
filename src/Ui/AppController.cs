@@ -31,6 +31,7 @@ public sealed class AppController
     private readonly TouchpadHaptics? _haptics;
     private readonly TouchpadHeavyPress? _heavy;
     private readonly PowerModeSync? _modeSync;  // режим питания Windows вместе с режимом (XIC-96)
+    private readonly PowerLimitControl? _powerLimits;
 
     private readonly IAutoStart _autoStartTask;
     private readonly object _autoStartLock = new();
@@ -72,7 +73,8 @@ public sealed class AppController
         TravelChargeMonitor travel, TouchpadControl touchpad, TouchscreenControl touchscreen,
         TouchpadDeadZone deadZone, TouchpadEdgeSliders edges,
         TouchpadHaptics? haptics = null, TouchpadHeavyPress? heavy = null, PowerModeSync? modeSync = null,
-        IAutoStart? autoStart = null, Func<bool>? enableAwake = null, Action? disableAwake = null)
+        IAutoStart? autoStart = null, Func<bool>? enableAwake = null, Action? disableAwake = null,
+        PowerLimitControl? powerLimits = null)
     {
         _mifs = mifs;
         _cfg = cfg;
@@ -97,6 +99,7 @@ public sealed class AppController
         _haptics = haptics; // null в тестах: юниты не должны писать в настоящий тачпад
         _heavy = heavy;     // тоже null в тестах — касаний настоящего тачпада там нет
         _modeSync = modeSync; // null в тестах: живой overlay питания юнитами не трогаем
+        _powerLimits = powerLimits; // null в тестах: native IPF не грузим
         if (_heavy is not null) _heavy.Pressed += () => TouchpadHeavyPressed?.Invoke();
         ApplyModeVisibility();
     }
@@ -378,6 +381,12 @@ public sealed class AppController
         _travel.Rearm();
         TravelCancelled?.Invoke();
     }
+
+    public PowerLimitView PowerLimits => _powerLimits?.View
+        ?? new(PowerLimitStatus.NotChecked, null, null, false, false, null);
+    public Task RefreshPowerLimitsAsync() => _powerLimits?.RefreshAsync() ?? Task.CompletedTask;
+    public Task ApplyPowerLimitsAsync(int pl1, int pl2) => _powerLimits?.ApplyAsync(pl1, pl2) ?? Task.CompletedTask;
+    public Task RestorePowerLimitsAsync() => _powerLimits?.RestoreAsync() ?? Task.CompletedTask;
 
     // ---- Режимы производительности ----
 

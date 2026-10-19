@@ -17,9 +17,21 @@ This is a separate experimental fork build, not an official Oksion release or a 
 - Startup now reports pending, confirmed state and failure instead of assuming a click succeeded.
 - Refreshed settings: a status hero, branded navigation and wrapping setting titles, retaining
   light/dark palettes and DPI scaling. Original icons and attribution are preserved.
-- **No watt-based TDP control yet.** Static research found a stock Intel IPF PL1/PL2 candidate;
-  ABI, runtime capabilities, safe bounds and rollback remain unverified.
-  [Research evidence and limitations (RU)](docs/18-fork-power-controls.md).
+- **Watt-based CPU limits via the installed Intel IPF/DTT driver:** manual sustained PL1 and short-term PL2
+  in Power and lid / Performance. A user-approved **40/65 → 39/64 → 40/65 W** readback/restore test
+  succeeded on TM2424; original values were restored. No new kernel driver was needed.
+  Experimental reductions only: 10 W to the captured original limits, PL1≤PL2, no overclocking,
+  automatic reapply or protection changes. 10 W is an application guardrail, not an OEM guarantee.
+  [Evidence, architecture and limitations (RU)](docs/18-fork-power-controls.md).
+- **Power-control build is a ZIP package:** extract everything; keep `XiControl.exe` and `XiIntelPower.dll`
+  together. Requires installed Intel IPF R5, administrator rights and an up-to-date
+  [Microsoft Visual C++ x64 Runtime](https://aka.ms/vc14/vc_redist.x64.exe).
+  Intel/OEM drivers are not redistributed or installed automatically. Read does not write hardware;
+  a recovery journal left after a failure is restored with the separate button.
+  Recovery is bound to the original AC/DC source: AC limits are never restored on battery.
+  The two-second test is not a thermal stress test or proof of long-term enforcement.
+- **Refined power UI:** two compact PL1/PL2 cards with sliders, precise numeric input, current watts,
+  a shared BIOS-lock summary and dedicated apply/restore actions.
 
 <p align="center">
   <img src="docs/img/power-settings-dark.png" width="620" alt="New Power and lid section, dark theme, Russian UI">

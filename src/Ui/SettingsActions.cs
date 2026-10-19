@@ -60,6 +60,10 @@ public sealed class SettingsActions
     public required Action<Action> CheckDriversNow;          // проверить по кнопке; колбэк — перерисовать вкладку
     public required Func<string, OemServiceView> GetOemService; // служба Xiaomi по имени: состояние на сейчас (XIC-87)
     public required Action<string, bool, Action> SetOemService; // имя, включить?; колбэк — перерисовать вкладку
+    public required Func<PowerLimitView> GetPowerLimits;
+    public required Action<Action> RefreshPowerLimits;
+    public required Action<int, int, Action> ApplyPowerLimits;
+    public required Action<Action> RestorePowerLimits;
     public required Action<bool> SetPowerModeSync;           // режим питания Windows вместе с режимом (XIC-96)
     public required Func<bool> PowerModeSyncBlocked;         // служба Xiaomi запущена — тумблер неактивен
     public required Action OpenDriversTab;                   // перейти на вкладку «Драйверы» (там службы Xiaomi)

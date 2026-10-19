@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-19",
+  "model": "Xiaomi Book Pro 14 (TM2424)",
+  "processor": "Intel Core Ultra X7 358H",
+  "intelIpfVersion": "2.3.20201.4882",
+  "clientApiRevision": 5,
+  "interface": "Platform.SOC.Power",
+  "elevated": true,
+  "beforeMilliwatts": { "PL1": 40000, "PL2": 65000 },
+  "requestedMilliwatts": { "PL1": 39000, "PL2": 64000 },
+  "immediateReadbackMilliwatts": { "PL1": 39000, "PL2": 64000 },
+  "afterTwoSecondsMilliwatts": { "PL1": 39000, "PL2": 64000 },
+  "restoredMilliwatts": { "PL1": 40000, "PL2": 65000 },
+  "powerLimitLock": 0,
+  "powerLimitEnable": true,
+  "recoveryPending": false,
+  "scope": "User-approved limit write/readback/restore test only; not a thermal stress test or proof of long-term power enforcement."
+}

@@ -759,6 +759,15 @@ public sealed class TrayApp : IDisposable
 
     private SettingsForm? _settings;
 
+    private void PowerLimitOperation(Task run, Action done)
+    {
+        _osd.BeginInvoke(done);
+        _ = run.ContinueWith(_ =>
+        {
+            if (!_osd.IsDisposed && _osd.IsHandleCreated) _osd.BeginInvoke(done);
+        }, TaskScheduler.Default);
+    }
+
     // Открыть окно настроек (лениво создаётся, дальше — из спрятанного состояния).
     private void OpenSettings()
     {
@@ -823,6 +832,10 @@ public sealed class TrayApp : IDisposable
                     _osd.BeginInvoke(done); // и с результатом
                 }),
                 GetOemService = _controller.GetOemServiceView,
+                GetPowerLimits = () => _controller.PowerLimits,
+                RefreshPowerLimits = done => PowerLimitOperation(_controller.RefreshPowerLimitsAsync(), done),
+                ApplyPowerLimits = (pl1, pl2, done) => PowerLimitOperation(_controller.ApplyPowerLimitsAsync(pl1, pl2), done),
+                RestorePowerLimits = done => PowerLimitOperation(_controller.RestorePowerLimitsAsync(), done),
                 SetPowerModeSync = _controller.SetPowerModeSync,
                 PowerModeSyncBlocked = () => _controller.PowerModeSyncBlocked,
                 OpenDriversTab = () => _settings?.ShowTab("settings.tab.drivers"),
