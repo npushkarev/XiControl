@@ -9,113 +9,133 @@ namespace XiControl.Ui.Settings;
 internal static class PowerLimitsPanel
 {
     private static bool _showDetails;
-    private static PerfMode _profileMode = PerfMode.Auto;
-    public static void SelectMode(PerfMode mode) => _profileMode = mode;
+    private static readonly PowerModeEditor Editor = new();
+    public static void SelectMode(PerfMode mode) => Editor.Select(mode);
 
     public static void Add(SettingsPane pane, SettingsToolkit ui, SettingsActions act, Action rebuild)
     {
         var view = act.GetPowerLimits();
-        bool busy = view.Status == PowerLimitStatus.Busy;
+        bool busy = view.Status == PowerLimitStatus.Busy, online = act.IsOnlineNow();
+        var profiles = act.GetPowerModeProfiles();
+        PerfMode selected = Editor.Selected ?? view.Mode ?? PerfMode.Auto;
+        if (Editor.Selected is null && view.Mode is not null) Editor.Select(selected);
+        bool isActive = view.Mode == selected;
+        var saved = PowerModeProfiles.Find(profiles, selected, online);
         ui.AddGroup(pane, "settings.tdp.group");
-        var check = Button(ui, busy ? "settings.tdp.busy" : "settings.tdp.read", () => act.RefreshPowerLimits(rebuild));
+        AddModePicker(pane, ui, selected, view.Mode, profiles, online, busy, rebuild);
+        string name = Loc.T(ModeUi.Key(selected) ?? "mode.auto");
+        string source = Loc.T(online ? "settings.perf.modes.ac" : "settings.perf.modes.battery");
+        var check = Button(ui, busy ? "settings.tdp.busy" : "settings.tdp.editor.refresh", () => act.RefreshPowerLimits(rebuild));
         check.Enabled = !busy;
-        pane.Controls.Add(ui.Row(Loc.T("settings.tdp.driver"), Loc.T(StatusKey(view.Status)), check));
+        string context = Loc.T("settings.tdp.editor.context", name, source,
+            Loc.T(isActive ? "settings.tdp.editor.active" : "settings.tdp.editor.inactive"));
+        pane.Controls.Add(ui.Row(context, Loc.T(isActive ? "settings.tdp.editor.activehint" : "settings.tdp.editor.savedhint"), check));
+        if (view.Status is PowerLimitStatus.Busy or PowerLimitStatus.Applied or PowerLimitStatus.Restored)
+            pane.Controls.Add(new Label { Text = Loc.T(StatusKey(view.Status)), AutoSize = true, MaximumSize = new Size(ui.RowW, 0),
+                Font = ui.DescFont, ForeColor = ui.T.Text2, Margin = new Padding(0, 0, 0, ui.Sc(5)) });
         if (view.Status == PowerLimitStatus.Failed) ui.AddNote(pane, "settings.tdp.error");
+        if (view.Active) Recovery(pane, ui, act, rebuild, busy);
         if (view.Current is not { } current)
         {
             ui.AddNote(pane, "settings.tdp.note");
-            if (view.Active) Recovery(pane, ui, act, rebuild, busy);
             return;
         }
 
-        bool editable = view.CanApply && !busy && view.Baseline is { Pl1Milliwatts: >= 10000, Pl2Milliwatts: >= 10000 };
-        int max1 = Math.Clamp((view.Baseline?.Pl1Milliwatts ?? current.Pl1Milliwatts) / 1000, 10, 250);
-        int max2 = Math.Clamp((view.Baseline?.Pl2Milliwatts ?? current.Pl2Milliwatts) / 1000, 10, 250);
+        var values = Editor.Values(selected, online, profiles, current);
+        bool editable = !busy && view.Status != PowerLimitStatus.Failed && current.CanControl;
+        // У другого режима могут быть большие сохранённые значения: не подменяем их текущим Eco-cap.
+        // Для активного режима превышение baseline видно как ошибка и блокирует применение.
+        int cap1 = Math.Clamp((view.Baseline?.Pl1Milliwatts ?? current.Pl1Milliwatts) / 1000, 10, 250);
+        int cap2 = Math.Clamp((view.Baseline?.Pl2Milliwatts ?? current.Pl2Milliwatts) / 1000, 10, 250);
+        int max1 = isActive ? Math.Max(cap1, values.Pl1) : 250;
+        int max2 = isActive ? Math.Max(cap2, values.Pl2) : 250;
         int gap = ui.Sc(10), cardW = (ui.RowW - gap) / 2;
-        var first = LimitCard(ui, cardW, "settings.tdp.pl1", "settings.tdp.target.pl1", current.Pl1Milliwatts, max1, editable, out var pl1);
-        var second = LimitCard(ui, cardW, "settings.tdp.pl2", "settings.tdp.target.pl2", current.Pl2Milliwatts, max2, editable, out var pl2);
+        var first = LimitCard(ui, cardW, "settings.tdp.editor.pl1", "settings.tdp.target.pl1", values.Pl1 * 1000, max1, editable, out var pl1);
+        var second = LimitCard(ui, cardW, "settings.tdp.editor.pl2", "settings.tdp.target.pl2", values.Pl2 * 1000, max2, editable, out var pl2);
         var cards = new Panel { Width = ui.RowW, Height = Math.Max(first.Height, second.Height), BackColor = ui.T.WinBg, Margin = new Padding(0, ui.Sc(7), 0, ui.Sc(8)) };
         first.Height = second.Height = cards.Height;
         second.Left = cardW + gap;
-        cards.Controls.Add(first);
-        cards.Controls.Add(second);
-        pane.Controls.Add(cards);
-        AddModeProfiles(pane, ui, act, rebuild, view, pl1, pl2, editable);
+        cards.Controls.Add(first); cards.Controls.Add(second); pane.Controls.Add(cards);
 
-        string info = Loc.T("settings.tdp.tdp") + ": " + (current.TdpMilliwatts is int tdp ? Watts(tdp) : "—")
-            + "  ·  " + Loc.T("settings.tdp.lock") + ": " + Loc.T(current.Lock == 0 ? "settings.tdp.unlocked" : "settings.tdp.locked");
-        int infoH = TextRenderer.MeasureText(info, ui.DescFont, new Size(ui.RowW, 0), TextFormatFlags.WordBreak).Height;
-        pane.Controls.Add(new Label { Text = info, Font = ui.DescFont, ForeColor = ui.T.Text2, BackColor = ui.T.WinBg,
-            Size = new Size(ui.RowW, infoH + ui.Sc(3)), Margin = new Padding(0, 0, 0, ui.Sc(7)) });
-
-        var apply = Button(ui, "settings.tdp.apply", () =>
+        var state = new Label { AutoSize = true, MaximumSize = new Size(ui.RowW, 0), Font = ui.DescFont,
+            ForeColor = ui.T.Text2, BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(8)) };
+        pane.Controls.Add(state);
+        var save = Button(ui, isActive ? "settings.tdp.editor.saveapply" : "settings.tdp.editor.save", () =>
         {
             if (pl1.Value > pl2.Value) return;
-            if (MessageBox.Show(Loc.T("settings.tdp.confirm"), Loc.T("settings.tdp.group"),
+            if (isActive && MessageBox.Show(Loc.T("settings.tdp.editor.confirm", name), Loc.T("settings.tdp.editor.title"),
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            act.ApplyPowerLimits((int)pl1.Value, (int)pl2.Value, rebuild);
+            act.SavePowerModeEditor(selected, online, (int)pl1.Value, (int)pl2.Value, isActive, () =>
+            {
+                if (act.GetPowerLimits().Status is not (PowerLimitStatus.Busy or PowerLimitStatus.Failed)) Editor.Saved(selected, online);
+                rebuild();
+            });
         });
-        apply.BackColor = ui.T.Accent;
-        apply.ForeColor = ui.T.Dark ? ui.T.WinBg : ui.T.Card;
-        void ValidatePair(object? sender, EventArgs e) => apply.Enabled = editable && pl1.Value <= pl2.Value;
-        pl1.ValueChanged += ValidatePair;
-        pl2.ValueChanged += ValidatePair;
-        ValidatePair(null, EventArgs.Empty);
-        var buttons = new FlowLayoutPanel { Width = ui.RowW, AutoSize = true, WrapContents = true,
-            BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(5)) };
-        buttons.Controls.Add(apply);
-        var restore = Button(ui, "settings.tdp.restore", () => act.RestorePowerLimits(rebuild));
-        restore.Enabled = view.Active && !busy;
-        buttons.Controls.Add(restore);
-        pane.Controls.Add(buttons);
-        if (!current.CanControl) ui.AddNote(pane, "settings.tdp.unsupported");
-        ui.AddNote(pane, "settings.tdp.note");
-        var details = Button(ui, "settings.tdp.details", () => { _showDetails = !_showDetails; rebuild(); });
-        pane.Controls.Add(details);
-        if (_showDetails) ui.AddNote(pane, "settings.tdp.session");
-    }
-
-    private static void AddModeProfiles(SettingsPane pane, SettingsToolkit ui, SettingsActions act,
-        Action rebuild, PowerLimitView view, NumericUpDown pl1, NumericUpDown pl2, bool editable)
-    {
-        bool online = act.IsOnlineNow();
-        var modes = AppController.AllModes;
-        var saved = PowerModeProfiles.Find(act.GetPowerModeProfiles(), _profileMode, online);
-        var selector = ui.Combo([.. modes.Select(m => Loc.T(ModeUi.Key(m) ?? "mode.auto"))],
-            Array.IndexOf(modes, _profileMode), i => { _profileMode = modes[i]; rebuild(); }, ui.Sc(155));
-        ui.AddRow(pane, "settings.tdp.profile.mode", "settings.tdp.profile.mode.desc", selector);
-        string text = saved is null ? Loc.T("settings.tdp.profile.none")
-            : Loc.T("settings.tdp.profile.saved", saved.Pl1Watts, saved.Pl2Watts);
-        text = Loc.T(online ? "settings.perf.modes.ac" : "settings.perf.modes.battery") + " · " + text;
-        pane.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(ui.RowW, 0),
-            Font = ui.DescFont, ForeColor = ui.T.Text2, BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(6)) });
-        var save = Button(ui, "settings.tdp.profile.save", () =>
+        save.BackColor = ui.T.Accent; save.ForeColor = ui.T.Dark ? ui.T.WinBg : ui.T.Card;
+        var cancel = Button(ui, "settings.tdp.editor.cancel", () => { Editor.Saved(selected, online); rebuild(); });
+        void Validate(object? sender, EventArgs e)
         {
-            if (pl1.Value > pl2.Value) return;
-            if (MessageBox.Show(Loc.T("settings.tdp.profile.confirm"), Loc.T("settings.tdp.profile.mode"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            act.SavePowerModeProfile(_profileMode, online, (int)pl1.Value, (int)pl2.Value, rebuild);
-        });
-        save.Enabled = editable;
-        void Validate(object? sender, EventArgs e) => save.Enabled = editable && pl1.Value <= pl2.Value;
-        pl1.ValueChanged += Validate;
-        pl2.ValueChanged += Validate;
-        var remove = Button(ui, "settings.tdp.profile.remove", () => act.RemovePowerModeProfile(_profileMode, online, rebuild));
-        remove.Enabled = saved is not null && view.Status != PowerLimitStatus.Busy;
+            Editor.Change(selected, online, (int)pl1.Value, (int)pl2.Value);
+            bool pair = pl1.Value <= pl2.Value;
+            bool cap = !isActive || (pl1.Value <= cap1 && pl2.Value <= cap2);
+            bool dirty = Editor.Dirty(selected, online);
+            bool notApplied = isActive && ((int)pl1.Value * 1000 != current.Pl1Milliwatts || (int)pl2.Value * 1000 != current.Pl2Milliwatts);
+            save.Enabled = editable && pair && cap && (dirty || saved is null || notApplied)
+                && (!isActive || view.CanApply);
+            cancel.Enabled = !busy && dirty;
+            state.Text = !pair ? Loc.T("settings.tdp.editor.invalidpair") : !cap ? Loc.T("settings.tdp.editor.abovecap")
+                : dirty ? Loc.T("settings.tdp.editor.unsaved") : saved is not null
+                    ? Loc.T("settings.tdp.editor.autoloaded", saved.Pl1Watts, saved.Pl2Watts)
+                    : Loc.T("settings.tdp.editor.template");
+        }
+        pl1.ValueChanged += Validate; pl2.ValueChanged += Validate; Validate(null, EventArgs.Empty);
         var buttons = new FlowLayoutPanel { Width = ui.RowW, AutoSize = true, WrapContents = true,
             BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(8)) };
-        buttons.Controls.Add(save); buttons.Controls.Add(remove);
-        if (saved is not null)
+        buttons.Controls.Add(save); buttons.Controls.Add(cancel); pane.Controls.Add(buttons);
+        string live = Loc.T("settings.tdp.editor.live", current.Pl1Milliwatts / 1000.0, current.Pl2Milliwatts / 1000.0);
+        pane.Controls.Add(new Label { Text = live, AutoSize = true, MaximumSize = new Size(ui.RowW, 0), Font = ui.DescFont,
+            ForeColor = ui.T.Text2, BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(8)) });
+        if (!current.CanControl) ui.AddNote(pane, "settings.tdp.unsupported");
+        var details = Button(ui, "settings.tdp.details", () => { _showDetails = !_showDetails; rebuild(); });
+        pane.Controls.Add(details);
+        if (_showDetails)
         {
-            var load = Button(ui, "settings.tdp.profile.load", () =>
+            ui.AddNote(pane, "settings.tdp.session");
+            var remove = Button(ui, "settings.tdp.editor.remove", () => act.RemovePowerModeProfile(selected, online, () =>
             {
-                pl1.Value = Math.Clamp(saved.Pl1Watts, (int)pl1.Minimum, (int)pl1.Maximum);
-                pl2.Value = Math.Clamp(saved.Pl2Watts, (int)pl2.Minimum, (int)pl2.Maximum);
-            });
-            load.Enabled = editable;
-            buttons.Controls.Add(load);
+                if (act.GetPowerLimits().Status is not (PowerLimitStatus.Busy or PowerLimitStatus.Failed)) Editor.Saved(selected, online);
+                rebuild();
+            }));
+            remove.Enabled = saved is not null && !busy; pane.Controls.Add(remove);
         }
-        pane.Controls.Add(buttons);
+        ui.AddNote(pane, "settings.tdp.note");
+    }
+
+    private static void AddModePicker(SettingsPane pane, SettingsToolkit ui, PerfMode selected, PerfMode? active,
+        IReadOnlyList<PowerModeProfile> profiles, bool online, bool busy, Action rebuild)
+    {
+        int gap = ui.Sc(6), width = (ui.RowW - gap * 2) / 3, height = ui.Sc(48);
+        var grid = new Panel { Width = ui.RowW, Height = height * 2 + gap, BackColor = ui.T.WinBg,
+            Margin = new Padding(0, ui.Sc(2), 0, ui.Sc(8)) };
+        var modes = AppController.AllModes;
+        for (int i = 0; i < modes.Length; i++)
+        {
+            var mode = modes[i];
+            string title = Loc.T(ModeUi.Key(mode) ?? "mode.auto");
+            if (active == mode) title += " · " + Loc.T("settings.tdp.editor.active");
+            var saved = PowerModeProfiles.Find(profiles, mode, online);
+            string subtitle = saved is null ? Loc.T("settings.tdp.editor.stock")
+                : Loc.T("settings.tdp.editor.short", saved.Pl1Watts, saved.Pl2Watts);
+            var button = new Button { Text = title + "\n" + subtitle, Font = ui.CtlFont,
+                Location = new Point(i % 3 * (width + gap), i / 3 * (height + gap)), Size = new Size(width, height),
+                FlatStyle = FlatStyle.Flat, BackColor = selected == mode ? ui.T.Sel : ui.T.Card,
+                ForeColor = selected == mode ? ui.T.Accent : ui.T.Text, Enabled = !busy,
+                AccessibleName = title + ", " + subtitle, Cursor = Cursors.Hand };
+            button.FlatAppearance.BorderColor = selected == mode ? ui.T.Accent : ui.T.Border;
+            button.Click += (_, _) => { Editor.Select(mode); rebuild(); };
+            grid.Controls.Add(button);
+        }
+        pane.Controls.Add(grid);
     }
 
     private static Panel LimitCard(SettingsToolkit ui, int width, string captionKey, string targetKey,
@@ -124,35 +144,38 @@ internal static class PowerLimitsPanel
         int pad = ui.Sc(16), textW = width - pad * 2;
         string caption = Loc.T(captionKey);
         int captionH = TextRenderer.MeasureText(caption, ui.DescFont, new Size(textW, 0), TextFormatFlags.WordBreak).Height;
-        var card = new Panel { Width = width, Height = ui.Sc(157) + captionH, BackColor = ui.T.Card };
+        var card = new Panel { Width = width, Height = ui.Sc(120) + captionH, BackColor = ui.T.Card };
         card.Paint += (_, e) => ui.PaintCardBorder(e.Graphics, card.Width, card.Height);
         card.Controls.Add(new Label { Text = caption, ForeColor = ui.T.Text2, Font = ui.DescFont,
             Location = new Point(pad, ui.Sc(13)), Size = new Size(textW, captionH + ui.Sc(2)) });
-        card.Controls.Add(new Label { Text = Watts(milliwatts), ForeColor = ui.T.Text, Font = ui.HeadFont,
-            Location = new Point(pad, ui.Sc(21) + captionH), Size = new Size(textW, ui.Sc(32)) });
+        var valueText = new Label { Text = Watts(milliwatts), ForeColor = ui.T.Text, Font = ui.HeadFont,
+            Location = new Point(pad, ui.Sc(21) + captionH), Size = new Size(textW - ui.Sc(82), ui.Sc(32)) };
+        card.Controls.Add(valueText);
         string target = Loc.T(targetKey);
         number = new NumericUpDown
         {
             Minimum = 10, Maximum = maximum, Value = Math.Clamp(milliwatts / 1000, 10, maximum), Increment = 1,
             Width = ui.Sc(76), Font = ui.CtlFont, BackColor = ui.T.Field, ForeColor = ui.T.Text,
             BorderStyle = BorderStyle.FixedSingle, Enabled = enabled, AccessibleName = target,
-            Location = new Point(width - pad - ui.Sc(76), ui.Sc(65) + captionH),
+            Location = new Point(width - pad - ui.Sc(76), ui.Sc(25) + captionH),
         };
         card.Controls.Add(number);
-        card.Controls.Add(new Label { Text = target, Font = ui.DescFont, ForeColor = ui.T.Text2,
-            Location = new Point(pad, ui.Sc(67) + captionH), Size = new Size(textW - number.Width - ui.Sc(6), ui.Sc(31)) });
         var slider = new PowerSlider(ui, 10, maximum, (int)number.Value)
         {
-            Location = new Point(pad, ui.Sc(103) + captionH), Size = new Size(textW, ui.Sc(27)),
+            Location = new Point(pad, ui.Sc(66) + captionH), Size = new Size(textW, ui.Sc(27)),
             Enabled = enabled, AccessibleName = target,
         };
         var input = number;
-        input.ValueChanged += (_, _) => slider.Value = (int)input.Value;
+        input.ValueChanged += (_, _) =>
+        {
+            slider.Value = (int)input.Value;
+            valueText.Text = Watts((int)input.Value * 1000);
+        };
         slider.ValueChanged += () => input.Value = slider.Value;
         card.Controls.Add(slider);
         string range = Watts(10000) + " — " + Watts(maximum * 1000);
         card.Controls.Add(new Label { Text = range, Font = ui.DescFont, ForeColor = ui.T.Text2,
-            Location = new Point(pad, ui.Sc(131) + captionH), Size = new Size(textW, ui.Sc(20)) });
+            Location = new Point(pad, ui.Sc(94) + captionH), Size = new Size(textW, ui.Sc(20)) });
         return card;
     }
 

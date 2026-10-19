@@ -5,31 +5,40 @@ namespace XiControl.SystemIntegration;
 
 public enum PowerLimitStatus { NotChecked, Busy, Ready, Applied, Restored, Changed, Failed }
 public sealed record PowerLimitView(PowerLimitStatus Status, PowerLimitSnapshot? Current,
-    PowerLimitSnapshot? Baseline, bool Active, bool CanApply, string? Error);
+    PowerLimitSnapshot? Baseline, bool Active, bool CanApply, string? Error, PerfMode? Mode = null);
 
 /// <summary>Ручное, только понижающее управление: нет автоприменения, таймера, API-маршрута или «борьбы» с DTT.</summary>
 public sealed class PowerLimitControl : IDisposable
 {
-    private readonly NativePowerLimitBackend _backend;
+    private readonly IPowerLimitBackend _backend;
     private readonly PowerLimitSession _session;
     private readonly IPowerEvents _power;
+    private readonly IMifsClient? _mifs;
+    private readonly Func<bool> _isElevated;
+    private readonly bool _ownsBackend;
+    private PerfMode? _cachedMode;
     private readonly object _stateLock = new(), _operationLock = new();
     private PowerLimitView _view = new(PowerLimitStatus.NotChecked, null, null, false, false, null);
     private bool _disposed;
     private bool _lastOnline;
     private int _generation;
-    private readonly PowerModeProfilesStore _profileStore = new();
+    private readonly IPowerModeProfiles _profileStore;
     private IReadOnlyList<PowerModeProfile> _profiles = Array.Empty<PowerModeProfile>();
     private bool _profilesLoaded;
 
     public IReadOnlyList<PowerModeProfile> Profiles { get { lock (_stateLock) return _profiles; } }
 
-    public PowerLimitControl(IPowerEvents power)
+    public PowerLimitControl(IPowerEvents power, IMifsClient? mifs = null, IPowerLimitBackend? backend = null,
+        IPowerLimitJournal? journal = null, IPowerModeProfiles? profiles = null, Func<bool>? isElevated = null)
     {
         _power = power;
+        _mifs = mifs;
         _lastOnline = power.IsOnline;
-        _backend = new NativePowerLimitBackend();
-        _session = new PowerLimitSession(_backend, new PowerLimitJournalStore(),
+        _ownsBackend = backend is null;
+        _backend = backend ?? new NativePowerLimitBackend();
+        _profileStore = profiles ?? new PowerModeProfilesStore();
+        _isElevated = isElevated ?? (() => NativePowerLimitBackend.IsElevated);
+        _session = new PowerLimitSession(_backend, journal ?? new PowerLimitJournalStore(),
             () => power.IsOnline, () => Volatile.Read(ref _generation));
         power.PowerModeChanged += OnPower;
         power.SessionEnding += OnSessionEnding;
@@ -41,6 +50,7 @@ public sealed class PowerLimitControl : IDisposable
     {
         // «Прочитать» действительно не пишет: оставшийся backup восстанавливается
         // отдельной кнопкой, а не незаметным побочным эффектом запроса.
+        ReadMode();
         if (!_profilesLoaded) LoadProfiles();
         var current = _session.Read();
         Publish(PowerLimitStatus.Ready, current, null);
@@ -58,16 +68,66 @@ public sealed class PowerLimitControl : IDisposable
         Publish(PowerLimitStatus.Restored, _session.Read(), null);
     });
 
-    public Task SaveProfileAsync(PerfMode mode, bool onAc, int pl1Watts, int pl2Watts) => Run(() =>
+    public Task SaveProfileAsync(PerfMode mode, bool onAc, int pl1Watts, int pl2Watts) =>
+        SaveEditorAsync(mode, onAc, pl1Watts, pl2Watts, applyNow: false);
+
+    public Task SaveEditorAsync(PerfMode mode, bool onAc, int pl1Watts, int pl2Watts, bool applyNow) => Run(() =>
     {
-        var baseline = _session.Baseline ?? throw new InvalidOperationException("Read limits before saving a mode profile.");
-        if (!baseline.CanControl || onAc != _power.IsOnline || pl1Watts * 1000L > baseline.Pl1Milliwatts
-            || pl2Watts * 1000L > baseline.Pl2Milliwatts)
-            throw new InvalidOperationException("Profile exceeds the current confirmed power-source baseline.");
+        int epoch = Volatile.Read(ref _generation);
+        void Context()
+        {
+            if (onAc != _power.IsOnline || epoch != Volatile.Read(ref _generation))
+                throw new InvalidOperationException("Power context changed; read limits again before saving.");
+        }
+        Context();
+        // У неактивного режима свой OEM-baseline: чужой текущий cap не ограничивает
+        // сохранение пресета. При выборе режима Apply проверит уже его свежие границы.
         var next = PowerModeProfiles.Upsert(_profileStore.Load(), new(mode, onAc, pl1Watts, pl2Watts));
-        _profileStore.Save(next);
+        PowerLimitSnapshot? current = View.Current;
+        if (applyNow)
+        {
+            var baseline = _session.Baseline ?? throw new InvalidOperationException("Read limits before applying a mode profile.");
+            if (!baseline.CanControl || pl1Watts * 1000L > baseline.Pl1Milliwatts
+                || pl2Watts * 1000L > baseline.Pl2Milliwatts)
+                throw new InvalidOperationException("Profile exceeds the current confirmed power-source baseline.");
+            if (!_isElevated()) throw new UnauthorizedAccessException("Intel power control requires administrator rights.");
+            ReadMode();
+            if (_cachedMode != mode)
+            {
+                _session.Invalidate();
+                throw new InvalidOperationException("Performance mode changed or is unknown; read limits again before applying.");
+            }
+            Context();
+            _session.Apply(pl1Watts, pl2Watts);
+            try
+            {
+                // Ничего не сохраняем до подтверждённого Apply/readback. При ошибке
+                // диска возвращаем только ещё принадлежащие нам поля через журнал.
+                current = _backend.Read();
+                Context();
+                _profileStore.Save(next);
+            }
+            catch (Exception saveError)
+            {
+                try
+                {
+                    _session.Restore();
+                    Publish(PowerLimitStatus.Failed, _session.Read(), saveError.Message);
+                }
+                catch (Exception rollbackError)
+                {
+                    throw new AggregateException("Saving the mode profile and restoring power limits failed.", saveError, rollbackError);
+                }
+                throw;
+            }
+        }
+        else
+        {
+            Context();
+            _profileStore.Save(next);
+        }
         lock (_stateLock) { _profiles = next; _profilesLoaded = true; }
-        Publish(PowerLimitStatus.Ready, _backend.Read(), null);
+        Publish(applyNow ? PowerLimitStatus.Applied : PowerLimitStatus.Ready, current, null);
     });
 
     public Task RemoveProfileAsync(PerfMode mode, bool onAc) => Run(() =>
@@ -96,6 +156,7 @@ public sealed class PowerLimitControl : IDisposable
         _session.Invalidate();
         Context();
         if (!switchMode()) throw new InvalidOperationException("Firmware rejected the requested performance mode.");
+        ReadMode();
         if (profile is null)
         {
             // Машина без IPF по-прежнему переключает штатные режимы; native API не нужен.
@@ -108,6 +169,13 @@ public sealed class PowerLimitControl : IDisposable
         _session.Apply(profile.Pl1Watts, profile.Pl2Watts);
         Publish(PowerLimitStatus.Applied, _backend.Read(), null);
     });
+
+    private void ReadMode()
+    {
+        // Только с воркера; UI получает последнее подтверждённое чтение, не WMI.
+        try { _cachedMode = _mifs?.GetPerfMode(); }
+        catch (Exception ex) { _cachedMode = null; Log.Ex("IntelPower.Mode", ex); }
+    }
 
     private void LoadProfiles()
     {
@@ -153,7 +221,7 @@ public sealed class PowerLimitControl : IDisposable
             _view = new(status, snapshot, _session.Baseline, active,
                 (status is PowerLimitStatus.Ready or PowerLimitStatus.Applied or PowerLimitStatus.Restored)
                 && journalKnown && _session.Baseline is not null
-                && snapshot?.CanControl == true && NativePowerLimitBackend.IsElevated, error);
+                && snapshot?.CanControl == true && _isElevated(), error, _cachedMode);
     }
 
     private void OnPower(PowerModes mode)
@@ -202,7 +270,7 @@ public sealed class PowerLimitControl : IDisposable
             if (_disposed) return;
             ReleaseOwnedLimits();
             _disposed = true;
-            _backend.Dispose();
+            if (_ownsBackend && _backend is IDisposable disposable) disposable.Dispose();
         }
     }
 }

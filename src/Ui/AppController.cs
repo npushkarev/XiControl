@@ -392,6 +392,8 @@ public sealed class AppController
         _powerLimits?.SaveProfileAsync(mode, onAc, pl1, pl2) ?? Task.CompletedTask;
     public Task RemovePowerModeProfileAsync(PerfMode mode, bool onAc) =>
         _powerLimits?.RemoveProfileAsync(mode, onAc) ?? Task.CompletedTask;
+    public Task SavePowerModeEditorAsync(PerfMode mode, bool onAc, int pl1, int pl2, bool applyNow) =>
+        _powerLimits?.SaveEditorAsync(mode, onAc, pl1, pl2, applyNow) ?? Task.CompletedTask;
 
     /// <summary>Ручной клик режима в панели: откат старого cap → режим прошивки → его сохранённые ватты.</summary>
     public Task SelectPanelModeAsync(PerfMode mode)

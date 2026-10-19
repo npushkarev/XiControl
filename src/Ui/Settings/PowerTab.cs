@@ -8,8 +8,7 @@ public sealed class PowerTab : SettingsPane
 {
     public PowerTab(SettingsToolkit ui, AppConfig cfg, SettingsActions act, Action rebuild) : base(ui)
     {
-        ui.AddHero(this, "settings.tab.power", "settings.power.sub",
-            Loc.T(cfg.Awake ? "settings.power.active" : "settings.power.idle"), cfg.Awake);
+        ui.AddHeader(this, "settings.tab.power", "settings.power.sub");
 
         PowerLimitsPanel.Add(this, ui, act, rebuild);
 

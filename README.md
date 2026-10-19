@@ -2,11 +2,13 @@
 
 ## npushkarev public fork
 
-**0.18.0-fork.3:** the quick panel now has a visible **CPU power · TDP** card.
-Click it or **right-click a mode** to configure that mode's PL1/PL2. Read limits, choose a mode,
-set watts and **Save for mode**. AC and battery presets are separate. Presets apply on the next
-**manual mode selection in the quick panel**, not at startup, via Fn+K or on automatic power changes.
-A target above the selected mode's stock baseline is rejected; saving alone does not change power.
+**0.18.0-fork.4: one mode editor for TDP.** Open the **CPU power · TDP** card in the quick panel.
+Choose a mode tile before editing — its saved watts are loaded automatically. The selected mode,
+active state and AC/DC source are shown above the fields. The active mode has one **Save and apply**
+button; other modes use **Save for mode**, without changing power now. Separate Load and one-off Apply
+buttons were removed from the main flow. Drafts are isolated by mode and power source, with discard.
+Saving the active mode checks it again and rolls back hardware on profile-save failure.
+No power limits are automatically applied at startup or via Fn+K.
 
 <p align="center"><img src="docs/img/quick-panel-tdp-light.png" width="700" alt="Quick panel with visible TDP settings card"></p>
 

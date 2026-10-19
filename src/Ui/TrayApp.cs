@@ -882,6 +882,8 @@ public sealed class TrayApp : IDisposable
                 GetPowerModeProfiles = () => _controller.PowerModeProfiles,
                 SavePowerModeProfile = (mode, online, pl1, pl2, done) =>
                     PowerLimitOperation(_controller.SavePowerModeProfileAsync(mode, online, pl1, pl2), done),
+                SavePowerModeEditor = (mode, online, pl1, pl2, applyNow, done) =>
+                    PowerLimitOperation(_controller.SavePowerModeEditorAsync(mode, online, pl1, pl2, applyNow), done),
                 RemovePowerModeProfile = (mode, online, done) =>
                     PowerLimitOperation(_controller.RemovePowerModeProfileAsync(mode, online), done),
                 SetPowerModeSync = _controller.SetPowerModeSync,
