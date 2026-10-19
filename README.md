@@ -2,6 +2,14 @@
 
 ## npushkarev public fork
 
+**0.18.0-fork.3:** the quick panel now has a visible **CPU power · TDP** card.
+Click it or **right-click a mode** to configure that mode's PL1/PL2. Read limits, choose a mode,
+set watts and **Save for mode**. AC and battery presets are separate. Presets apply on the next
+**manual mode selection in the quick panel**, not at startup, via Fn+K or on automatic power changes.
+A target above the selected mode's stock baseline is rejected; saving alone does not change power.
+
+<p align="center"><img src="docs/img/quick-panel-tdp-light.png" width="700" alt="Quick panel with visible TDP settings card"></p>
+
 Based on [Oksion/XiControl](https://github.com/Oksion/XiControl), GPL-3.0.
 This is a separate experimental fork build, not an official Oksion release or a winget upgrade.
 

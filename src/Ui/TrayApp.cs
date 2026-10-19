@@ -164,7 +164,10 @@ public sealed class TrayApp : IDisposable
         _panel = new QuickPanelForm(_mifs, _cfg, touchpad, touchscreen);
         _panel.MonitorRequested = ShowMonitor;
         _panel.SettingsRequested = OpenSettings;
-        _panel.SetMode = _controller.SetMode;
+        _panel.SetMode = SelectPanelMode;
+        _panel.PowerLimitsRequested = OpenPowerLimits;
+        _panel.GetPowerLimitSummary = _controller.PowerLimitSummary;
+        _panel.ModePowerLimitText = _controller.ModePowerLimitText;
         _panel.SetCare = _controller.ToggleCare;
         _panel.SetTravel = _controller.SetTravel;
         _panel.ToggleOwl = _controller.ToggleAwake;
@@ -759,12 +762,52 @@ public sealed class TrayApp : IDisposable
 
     private SettingsForm? _settings;
 
+    private void SelectPanelMode(PerfMode mode)
+    {
+        var run = _controller.SelectPanelModeAsync(mode);
+        _ = run.ContinueWith(_ =>
+        {
+            if (_osd.IsDisposed || !_osd.IsHandleCreated) return;
+            _osd.BeginInvoke(new Action(() =>
+            {
+                if (_panel.Visible) _panel.RefreshUi();
+                _icon.Refresh();
+                if (_controller.PowerLimits.Status == PowerLimitStatus.Failed)
+                    _osd.Flash(OsdKind.Error, Loc.T("osd.failed"), Loc.T("settings.tdp.status.failed"));
+            }));
+        }, TaskScheduler.Default);
+    }
+
+    private void OpenPowerLimits(PerfMode? mode)
+    {
+        if (mode is PerfMode selected) Settings.PowerLimitsPanel.SelectMode(selected);
+        OpenSettings();
+        _settings?.ShowTab("settings.tab.power");
+        var run = _controller.RefreshPowerLimitsAsync();
+        _ = run.ContinueWith(_ =>
+        {
+            if (_osd.IsDisposed || !_osd.IsHandleCreated) return;
+            _osd.BeginInvoke(new Action(() =>
+            {
+                if (_settings is { IsDisposed: false, Visible: true })
+                {
+                    _settings.Popup();
+                    _settings.ShowTab("settings.tab.power");
+                }
+            }));
+        }, TaskScheduler.Default);
+    }
+
     private void PowerLimitOperation(Task run, Action done)
     {
         _osd.BeginInvoke(done);
         _ = run.ContinueWith(_ =>
         {
-            if (!_osd.IsDisposed && _osd.IsHandleCreated) _osd.BeginInvoke(done);
+            if (!_osd.IsDisposed && _osd.IsHandleCreated) _osd.BeginInvoke(new Action(() =>
+            {
+                done();
+                if (_panel.Visible) _panel.RefreshUi();
+            }));
         }, TaskScheduler.Default);
     }
 
@@ -836,6 +879,11 @@ public sealed class TrayApp : IDisposable
                 RefreshPowerLimits = done => PowerLimitOperation(_controller.RefreshPowerLimitsAsync(), done),
                 ApplyPowerLimits = (pl1, pl2, done) => PowerLimitOperation(_controller.ApplyPowerLimitsAsync(pl1, pl2), done),
                 RestorePowerLimits = done => PowerLimitOperation(_controller.RestorePowerLimitsAsync(), done),
+                GetPowerModeProfiles = () => _controller.PowerModeProfiles,
+                SavePowerModeProfile = (mode, online, pl1, pl2, done) =>
+                    PowerLimitOperation(_controller.SavePowerModeProfileAsync(mode, online, pl1, pl2), done),
+                RemovePowerModeProfile = (mode, online, done) =>
+                    PowerLimitOperation(_controller.RemovePowerModeProfileAsync(mode, online), done),
                 SetPowerModeSync = _controller.SetPowerModeSync,
                 PowerModeSyncBlocked = () => _controller.PowerModeSyncBlocked,
                 OpenDriversTab = () => _settings?.ShowTab("settings.tab.drivers"),

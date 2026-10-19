@@ -387,6 +387,39 @@ public sealed class AppController
     public Task RefreshPowerLimitsAsync() => _powerLimits?.RefreshAsync() ?? Task.CompletedTask;
     public Task ApplyPowerLimitsAsync(int pl1, int pl2) => _powerLimits?.ApplyAsync(pl1, pl2) ?? Task.CompletedTask;
     public Task RestorePowerLimitsAsync() => _powerLimits?.RestoreAsync() ?? Task.CompletedTask;
+    public IReadOnlyList<PowerModeProfile> PowerModeProfiles => _powerLimits?.Profiles ?? Array.Empty<PowerModeProfile>();
+    public Task SavePowerModeProfileAsync(PerfMode mode, bool onAc, int pl1, int pl2) =>
+        _powerLimits?.SaveProfileAsync(mode, onAc, pl1, pl2) ?? Task.CompletedTask;
+    public Task RemovePowerModeProfileAsync(PerfMode mode, bool onAc) =>
+        _powerLimits?.RemoveProfileAsync(mode, onAc) ?? Task.CompletedTask;
+
+    /// <summary>Ручной клик режима в панели: откат старого cap → режим прошивки → его сохранённые ватты.</summary>
+    public Task SelectPanelModeAsync(PerfMode mode)
+    {
+        if (_powerLimits is null) { SetMode(mode); return Task.CompletedTask; }
+        return _powerLimits.SelectModeAsync(mode, () =>
+        {
+            if (!Apply(mode)) return false;
+            _cfg.RememberMode(mode);
+            _modeSync?.Request();
+            return true;
+        });
+    }
+
+    public string? ModePowerLimitText(PerfMode mode)
+    {
+        var profile = SystemIntegration.PowerModeProfiles.Find(PowerModeProfiles, mode, _power.IsOnline);
+        return profile is null ? null : Loc.T("panel.tdp.values", profile.Pl1Watts, profile.Pl2Watts);
+    }
+
+    public string PowerLimitSummary(PerfMode? mode)
+    {
+        if (mode is PerfMode selected && ModePowerLimitText(selected) is { } saved)
+            return Loc.T("panel.tdp.profile", Loc.T(ModeUi.Key(selected) ?? "mode.auto"), saved);
+        return PowerLimits.Current is { } value
+            ? Loc.T("panel.tdp.values", value.Pl1Milliwatts / 1000.0, value.Pl2Milliwatts / 1000.0)
+            : Loc.T("panel.tdp.open");
+    }
 
     // ---- Режимы производительности ----
 

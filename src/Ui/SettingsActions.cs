@@ -64,6 +64,9 @@ public sealed class SettingsActions
     public required Action<Action> RefreshPowerLimits;
     public required Action<int, int, Action> ApplyPowerLimits;
     public required Action<Action> RestorePowerLimits;
+    public required Func<IReadOnlyList<PowerModeProfile>> GetPowerModeProfiles;
+    public required Action<PerfMode, bool, int, int, Action> SavePowerModeProfile;
+    public required Action<PerfMode, bool, Action> RemovePowerModeProfile;
     public required Action<bool> SetPowerModeSync;           // режим питания Windows вместе с режимом (XIC-96)
     public required Func<bool> PowerModeSyncBlocked;         // служба Xiaomi запущена — тумблер неактивен
     public required Action OpenDriversTab;                   // перейти на вкладку «Драйверы» (там службы Xiaomi)

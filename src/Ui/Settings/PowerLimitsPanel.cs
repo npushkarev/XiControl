@@ -1,6 +1,7 @@
 using System.Drawing.Drawing2D;
 using XiControl.Localization;
 using XiControl.SystemIntegration;
+using XiControl.Wmi;
 
 namespace XiControl.Ui.Settings;
 
@@ -8,6 +9,8 @@ namespace XiControl.Ui.Settings;
 internal static class PowerLimitsPanel
 {
     private static bool _showDetails;
+    private static PerfMode _profileMode = PerfMode.Auto;
+    public static void SelectMode(PerfMode mode) => _profileMode = mode;
 
     public static void Add(SettingsPane pane, SettingsToolkit ui, SettingsActions act, Action rebuild)
     {
@@ -37,6 +40,7 @@ internal static class PowerLimitsPanel
         cards.Controls.Add(first);
         cards.Controls.Add(second);
         pane.Controls.Add(cards);
+        AddModeProfiles(pane, ui, act, rebuild, view, pl1, pl2, editable);
 
         string info = Loc.T("settings.tdp.tdp") + ": " + (current.TdpMilliwatts is int tdp ? Watts(tdp) : "—")
             + "  ·  " + Loc.T("settings.tdp.lock") + ": " + Loc.T(current.Lock == 0 ? "settings.tdp.unlocked" : "settings.tdp.locked");
@@ -69,6 +73,49 @@ internal static class PowerLimitsPanel
         var details = Button(ui, "settings.tdp.details", () => { _showDetails = !_showDetails; rebuild(); });
         pane.Controls.Add(details);
         if (_showDetails) ui.AddNote(pane, "settings.tdp.session");
+    }
+
+    private static void AddModeProfiles(SettingsPane pane, SettingsToolkit ui, SettingsActions act,
+        Action rebuild, PowerLimitView view, NumericUpDown pl1, NumericUpDown pl2, bool editable)
+    {
+        bool online = act.IsOnlineNow();
+        var modes = AppController.AllModes;
+        var saved = PowerModeProfiles.Find(act.GetPowerModeProfiles(), _profileMode, online);
+        var selector = ui.Combo([.. modes.Select(m => Loc.T(ModeUi.Key(m) ?? "mode.auto"))],
+            Array.IndexOf(modes, _profileMode), i => { _profileMode = modes[i]; rebuild(); }, ui.Sc(155));
+        ui.AddRow(pane, "settings.tdp.profile.mode", "settings.tdp.profile.mode.desc", selector);
+        string text = saved is null ? Loc.T("settings.tdp.profile.none")
+            : Loc.T("settings.tdp.profile.saved", saved.Pl1Watts, saved.Pl2Watts);
+        text = Loc.T(online ? "settings.perf.modes.ac" : "settings.perf.modes.battery") + " · " + text;
+        pane.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(ui.RowW, 0),
+            Font = ui.DescFont, ForeColor = ui.T.Text2, BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(6)) });
+        var save = Button(ui, "settings.tdp.profile.save", () =>
+        {
+            if (pl1.Value > pl2.Value) return;
+            if (MessageBox.Show(Loc.T("settings.tdp.profile.confirm"), Loc.T("settings.tdp.profile.mode"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            act.SavePowerModeProfile(_profileMode, online, (int)pl1.Value, (int)pl2.Value, rebuild);
+        });
+        save.Enabled = editable;
+        void Validate(object? sender, EventArgs e) => save.Enabled = editable && pl1.Value <= pl2.Value;
+        pl1.ValueChanged += Validate;
+        pl2.ValueChanged += Validate;
+        var remove = Button(ui, "settings.tdp.profile.remove", () => act.RemovePowerModeProfile(_profileMode, online, rebuild));
+        remove.Enabled = saved is not null && view.Status != PowerLimitStatus.Busy;
+        var buttons = new FlowLayoutPanel { Width = ui.RowW, AutoSize = true, WrapContents = true,
+            BackColor = ui.T.WinBg, Margin = new Padding(0, 0, 0, ui.Sc(8)) };
+        buttons.Controls.Add(save); buttons.Controls.Add(remove);
+        if (saved is not null)
+        {
+            var load = Button(ui, "settings.tdp.profile.load", () =>
+            {
+                pl1.Value = Math.Clamp(saved.Pl1Watts, (int)pl1.Minimum, (int)pl1.Maximum);
+                pl2.Value = Math.Clamp(saved.Pl2Watts, (int)pl2.Minimum, (int)pl2.Maximum);
+            });
+            load.Enabled = editable;
+            buttons.Controls.Add(load);
+        }
+        pane.Controls.Add(buttons);
     }
 
     private static Panel LimitCard(SettingsToolkit ui, int width, string captionKey, string targetKey,

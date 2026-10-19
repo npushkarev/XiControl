@@ -20,12 +20,14 @@ public sealed class QuickPanelForm : FlyoutForm
     // видимые режимы (Эко/Полная мощность скрываются в Настройках или config.json)
     private (PerfMode mode, string key, Color accent)[] _modes = [];
     private Rectangle[] _modeRects = [];
-    private Rectangle _care80, _care100, _travelCell, _tpCell, _tsCell, _hzCell, _awake, _close, _monBtn, _settingsBtn;
+    private Rectangle _care80, _care100, _travelCell, _tpCell, _tsCell, _hzCell, _awake, _close, _monBtn, _settingsBtn, _powerLimits;
+    private string? _powerLimitSummary;
+    private string?[] _modePowerLimitText = [];
 
     private PerfMode? _mode;
     private bool _tpAvail, _tpOn; // тачпад: найден в системе / включён
     private bool _tsAvail, _tsOn; // сенсорный экран: найден в системе / включён
-    private int _hover = -1; // 0..N-1 режимы, 10=80, 11=100, 12=close, 13=сова, 14=монитор, 15=герцовка, 16=в дорогу, 17=тачпад, 18=тачскрин, 19=настройки
+    private int _hover = -1; // 0..N-1 режимы, 10=80, 11=100, 12=close, 13=сова, 14=монитор, 15=герцовка, 16=в дорогу, 17=тачпад, 18=тачскрин, 19=настройки, 20=TDP
 
     // клавиатурная навигация (Фаза 6.3): порядок обхода ячеек стрелками ←/→,
     // _focus — индекс в _order (-1 = фокуса нет, до первого нажатия стрелки)
@@ -71,6 +73,15 @@ public sealed class QuickPanelForm : FlyoutForm
     /// <summary>Кнопка-шестерёнка левее «Монитора»: открыть окно настроек (владелец — трей).</summary>
     public Action? SettingsRequested;
 
+    /// <summary>Открыть настройки TDP для режима, не переключая его; null — текущий режим неизвестен.</summary>
+    public Action<PerfMode?>? PowerLimitsRequested;
+
+    /// <summary>Только готовая сводка из кэша: никаких WMI/native-вызовов в UI-потоке.</summary>
+    public Func<PerfMode?, string>? GetPowerLimitSummary;
+
+    /// <summary>Краткие PL1/PL2 профиля из кэша; null — дополнительной подписи нет.</summary>
+    public Func<PerfMode, string?>? ModePowerLimitText;
+
     public QuickPanelForm(IMifsClient mifs, AppConfig cfg, TouchpadControl touchpad, TouchscreenControl touchscreen)
     {
         _mifs = mifs;
@@ -104,7 +115,9 @@ public sealed class QuickPanelForm : FlyoutForm
         RefreshState();
         DoLayout();
         var wa = Screen.PrimaryScreen!.WorkingArea;
-        Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + (int)(wa.Height * 0.58));
+        Location = new Point(
+            Math.Clamp(wa.Left + (wa.Width - Width) / 2, wa.Left, Math.Max(wa.Left, wa.Right - Width)),
+            Math.Clamp(wa.Top + (int)(wa.Height * 0.58), wa.Top, Math.Max(wa.Top, wa.Bottom - Height)));
         Show();
         Activate();
     }
@@ -122,6 +135,16 @@ public sealed class QuickPanelForm : FlyoutForm
         catch (Exception ex) { Log.Ex("QuickPanel.Touchpad", ex); _tpAvail = false; }
         try { _tsAvail = _cfg.TouchscreenFeature && _ts.Available; _tsOn = _ts.IsEnabled() ?? false; }
         catch (Exception ex) { Log.Ex("QuickPanel.Touchscreen", ex); _tsAvail = false; }
+        // Тексты снимаем один раз при обновлении, а не на каждом кадре анимации.
+        _powerLimitSummary = null;
+        Array.Clear(_modePowerLimitText);
+        try
+        {
+            _powerLimitSummary = GetPowerLimitSummary?.Invoke(_mode);
+            for (int i = 0; i < _modes.Length; i++)
+                _modePowerLimitText[i] = ModePowerLimitText?.Invoke(_modes[i].mode);
+        }
+        catch (Exception ex) { Log.Ex("QuickPanel.PowerLimitText", ex); }
     }
 
     /// <summary>
@@ -137,6 +160,7 @@ public sealed class QuickPanelForm : FlyoutForm
             .Select(m => (m, ModeUi.Key(m) ?? "mode.auto", ModeUi.Accent(m)))
             .ToArray();
         _modeRects = new Rectangle[_modes.Length];
+        _modePowerLimitText = new string?[_modes.Length];
         _hoverT = new float[_modes.Length];
         _hover = -1;
         if (Visible) { RefreshState(); DoLayout(); Invalidate(); }
@@ -166,7 +190,9 @@ public sealed class QuickPanelForm : FlyoutForm
         int capY = modeY + cellH + Sc(12);
         int pillsY = capY + Sc(20);
         int pillsH = Sc(42);
-        int height = pillsY + pillsH + p;
+        int powerY = pillsY + pillsH + gap;
+        int powerH = Sc(40);
+        int height = powerY + powerH + p;
 
         int cellWn = (content - gap * (n - 1)) / n;
         for (int i = 0; i < n; i++)
@@ -199,13 +225,22 @@ public sealed class QuickPanelForm : FlyoutForm
         _close = new Rectangle(width - p - Sc(22), p - Sc(2), Sc(22), Sc(22));
         _monBtn = new Rectangle(_close.X - Sc(28), _close.Y, Sc(22), Sc(22));
         _settingsBtn = new Rectangle(_monBtn.X - Sc(28), _close.Y, Sc(22), Sc(22));
+        _powerLimits = new Rectangle(p, powerY, content, powerH);
 
         Size = new Size(width, height);
         SetRoundedRegion(Sc(18));
+        if (Visible)
+        {
+            var wa = Screen.FromControl(this).WorkingArea;
+            Location = new Point(
+                Math.Clamp(Left, wa.Left, Math.Max(wa.Left, wa.Right - Width)),
+                Math.Clamp(Top, wa.Top, Math.Max(wa.Top, wa.Bottom - Height)));
+        }
 
         // порядок клавиатурного обхода — чистая логика в UiNav (покрыта тестами)
         _order.Clear();
         _order.AddRange(UiNav.PanelOrder(n, !_tsCell.IsEmpty, !_tpCell.IsEmpty, !_hzCell.IsEmpty, !_awake.IsEmpty));
+        _order.Add(20); // TDP — локальное дополнение панели; общий порядок UiNav не меняем
         _focus = UiNav.KeepFocus(_focus, _order.Count); // раскладка сузилась — сбросить
     }
 
@@ -221,6 +256,7 @@ public sealed class QuickPanelForm : FlyoutForm
         16 => _travelCell,
         17 => _tpCell,
         18 => _tsCell,
+        20 => _powerLimits,
         _ => id >= 0 && id < _modeRects.Length ? _modeRects[id] : Rectangle.Empty,
     };
 
@@ -347,7 +383,7 @@ public sealed class QuickPanelForm : FlyoutForm
     // Показать/спрятать тултип на смене hover-ячейки (иконочные — остальные подписаны).
     private void UpdateTip(int id, Point at) => _tip.Update(TipFor(id), at);
 
-    private static string? TipFor(int id) => id switch
+    private string? TipFor(int id) => id switch
     {
         12 => Loc.T("panel.close"),
         13 => Loc.T("panel.awake"),
@@ -357,7 +393,9 @@ public sealed class QuickPanelForm : FlyoutForm
         16 => Loc.T("panel.travel"),
         17 => Loc.T("panel.touchpad"),
         18 => Loc.T("panel.touchscreen"),
-        _ => null, // режимы и пилюли 80/100 подписаны текстом — тултип не нужен
+        20 => Loc.T("panel.tdp.open"),
+        _ when id >= 0 && id < _modes.Length => Loc.T("panel.tdp.modehint"),
+        _ => null,
     };
 
     // ведём прогресс каждой ячейки к цели (1 — под курсором, 0 — нет)
@@ -372,12 +410,28 @@ public sealed class QuickPanelForm : FlyoutForm
         }
     }
 
-    protected override void OnMouseClick(MouseEventArgs e) => Activate(HitTest(e.Location));
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        int h = HitTest(e.Location);
+        if (e.Button == MouseButtons.Right)
+        {
+            if (h >= 0 && h < _modes.Length) OpenPowerLimits(_modes[h].mode);
+            return; // контекстный клик никогда не меняет режим или другие переключатели
+        }
+        if (e.Button == MouseButtons.Left) Activate(h);
+    }
+
+    private void OpenPowerLimits(PerfMode? mode)
+    {
+        Hide(); // убрать глобальный хук и dwell-подсказку до открытия окна настроек
+        PowerLimitsRequested?.Invoke(mode);
+    }
 
     // Общий исполнитель для мыши и клавиатуры (h — id ячейки из HitTest/_order)
     private void Activate(int h)
     {
         if (h == 12) { Hide(); return; }
+        if (h == 20) { OpenPowerLimits(_mode); return; }
         if (h == 14) { MonitorRequested?.Invoke(); return; }
         if (h == 19) { SettingsRequested?.Invoke(); return; } // окно настроек заберёт фокус → панель скроется
         if (h >= 0 && h < _modes.Length)
@@ -423,6 +477,7 @@ public sealed class QuickPanelForm : FlyoutForm
         if (_close.Contains(pt)) return 12;
         if (_monBtn.Contains(pt)) return 14;
         if (_settingsBtn.Contains(pt)) return 19;
+        if (_powerLimits.Contains(pt)) return 20;
         for (int i = 0; i < _modes.Length; i++) if (_modeRects[i].Contains(pt)) return i;
         if (_travelCell.Contains(pt)) return 16;
         if (_care80.Contains(pt)) return 10;
@@ -470,10 +525,16 @@ public sealed class QuickPanelForm : FlyoutForm
             else
                 DrawModeIcon(g, _modes[i].mode, iconR, op, sat);
 
+            string? powerText = _modePowerLimitText[i];
+            bool hasPowerText = !string.IsNullOrWhiteSpace(powerText);
             TextRenderer.DrawText(g, Loc.T(_modes[i].key), LabelFont,
-                new Rectangle(r.X + Sc(3), r.Bottom - Sc(38), r.Width - Sc(6), Sc(36)),
+                new Rectangle(r.X + Sc(3), r.Bottom - Sc(hasPowerText ? 42 : 38), r.Width - Sc(6), Sc(hasPowerText ? 26 : 36)),
                 active ? FlyoutPalette.Text : FlyoutPalette.Dim,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+            if (hasPowerText)
+                TextRenderer.DrawText(g, powerText, LabelFont,
+                    new Rectangle(r.X + Sc(3), r.Bottom - Sc(17), r.Width - Sc(6), Sc(15)), FlyoutPalette.Dim,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         // заряд (заголовок слева) + «Не спать» (заголовок справа, над совой)
@@ -550,6 +611,15 @@ public sealed class QuickPanelForm : FlyoutForm
                 new RectangleF(_awake.X + (_awake.Width - owlIcon) / 2f, _awake.Y + (_awake.Height - owlIcon) / 2f, owlIcon, owlIcon),
                 owlOp, owlSat);
         }
+
+        // TDP — видимая точка входа; цифры, если есть, только из готового кэша владельца.
+        DrawCell(g, _powerLimits, false, _hover == 20, FlyoutPalette.Blue, Sc(10));
+        TextRenderer.DrawText(g, Loc.T("panel.tdp.title"), CapFont,
+            new Rectangle(_powerLimits.X + Sc(12), _powerLimits.Y + Sc(3), _powerLimits.Width - Sc(24), Sc(18)), FlyoutPalette.Text,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(g, string.IsNullOrWhiteSpace(_powerLimitSummary) ? Loc.T("panel.tdp.open") : _powerLimitSummary, LabelFont,
+            new Rectangle(_powerLimits.X + Sc(12), _powerLimits.Y + Sc(21), _powerLimits.Width - Sc(24), Sc(16)), FlyoutPalette.Dim,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
         // клавиатурный фокус: пунктирное кольцо вокруг текущей ячейки
         if (_focus >= 0 && _focus < _order.Count && RectOf(_order[_focus]) is { IsEmpty: false } fr)

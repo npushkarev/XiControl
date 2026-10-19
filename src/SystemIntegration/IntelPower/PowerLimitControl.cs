@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using XiControl.Wmi;
 
 namespace XiControl.SystemIntegration;
 
@@ -17,6 +18,11 @@ public sealed class PowerLimitControl : IDisposable
     private bool _disposed;
     private bool _lastOnline;
     private int _generation;
+    private readonly PowerModeProfilesStore _profileStore = new();
+    private IReadOnlyList<PowerModeProfile> _profiles = Array.Empty<PowerModeProfile>();
+    private bool _profilesLoaded;
+
+    public IReadOnlyList<PowerModeProfile> Profiles { get { lock (_stateLock) return _profiles; } }
 
     public PowerLimitControl(IPowerEvents power)
     {
@@ -35,6 +41,7 @@ public sealed class PowerLimitControl : IDisposable
     {
         // «Прочитать» действительно не пишет: оставшийся backup восстанавливается
         // отдельной кнопкой, а не незаметным побочным эффектом запроса.
+        if (!_profilesLoaded) LoadProfiles();
         var current = _session.Read();
         Publish(PowerLimitStatus.Ready, current, null);
     });
@@ -50,6 +57,63 @@ public sealed class PowerLimitControl : IDisposable
         _session.Restore();
         Publish(PowerLimitStatus.Restored, _session.Read(), null);
     });
+
+    public Task SaveProfileAsync(PerfMode mode, bool onAc, int pl1Watts, int pl2Watts) => Run(() =>
+    {
+        var baseline = _session.Baseline ?? throw new InvalidOperationException("Read limits before saving a mode profile.");
+        if (!baseline.CanControl || onAc != _power.IsOnline || pl1Watts * 1000L > baseline.Pl1Milliwatts
+            || pl2Watts * 1000L > baseline.Pl2Milliwatts)
+            throw new InvalidOperationException("Profile exceeds the current confirmed power-source baseline.");
+        var next = PowerModeProfiles.Upsert(_profileStore.Load(), new(mode, onAc, pl1Watts, pl2Watts));
+        _profileStore.Save(next);
+        lock (_stateLock) { _profiles = next; _profilesLoaded = true; }
+        Publish(PowerLimitStatus.Ready, _backend.Read(), null);
+    });
+
+    public Task RemoveProfileAsync(PerfMode mode, bool onAc) => Run(() =>
+    {
+        var next = PowerModeProfiles.Remove(_profileStore.Load(), mode, onAc);
+        _profileStore.Save(next);
+        lock (_stateLock) { _profiles = next; _profilesLoaded = true; }
+        Publish(PowerLimitStatus.Ready, View.Current, null);
+    });
+
+    // Только явный выбор режима из панели: вернуть старый cap ДО смены OEM-режима,
+    // затем снять новый baseline. Не восстанавливаем старые OEM-ватты поверх нового режима.
+    public Task SelectModeAsync(PerfMode mode, Func<bool> switchMode) => Run(() =>
+    {
+        if (!_profilesLoaded) LoadProfiles();
+        bool source = _power.IsOnline;
+        int epoch = Volatile.Read(ref _generation);
+        var profile = PowerModeProfiles.Find(Profiles, mode, source);
+        void Context()
+        {
+            if (source != _power.IsOnline || epoch != Volatile.Read(ref _generation))
+                throw new InvalidOperationException("Power source changed during mode selection; select again.");
+        }
+        // При старом активном cap сначала вернуть только свои значения в исходном AC/DC.
+        if (_session.Active) _session.Restore();
+        _session.Invalidate();
+        Context();
+        if (!switchMode()) throw new InvalidOperationException("Firmware rejected the requested performance mode.");
+        if (profile is null)
+        {
+            // Машина без IPF по-прежнему переключает штатные режимы; native API не нужен.
+            Publish(PowerLimitStatus.Changed, null, null);
+            return;
+        }
+        Context();
+        _session.Read();
+        Context();
+        _session.Apply(profile.Pl1Watts, profile.Pl2Watts);
+        Publish(PowerLimitStatus.Applied, _backend.Read(), null);
+    });
+
+    private void LoadProfiles()
+    {
+        var loaded = _profileStore.Load();
+        lock (_stateLock) { _profiles = loaded; _profilesLoaded = true; }
+    }
 
     private Task Run(Action action)
     {
